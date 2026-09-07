@@ -179,6 +179,23 @@ try {
     "Selecting sampler updates imageParameters.sampler"
   );
 
+  // Seed: fixed value saves as an integer; empty / Random saves an explicit null
+  // (overrides a seed stored on the Lumiverse connection, e.g. -1 from "shuffle").
+  const seedInput = settings.locator('input[name="novelAiSeed"]');
+  await seedInput.fill("424242");
+  await seedInput.press("Tab");
+  patch = await lastPatch(page);
+  assert.equal((patch?.imageParameters as any)?.seed, 424242, "Typing a seed saves imageParameters.seed as an integer");
+  assert.equal((patch?.imageParameters as any)?.sampler, "k_dpmpp_2m", "Seed change keeps the other NovelAI parameters");
+  await settings.locator("[data-novelai-random-seed]").click();
+  patch = await lastPatch(page);
+  assert.ok(patch && "seed" in (patch.imageParameters as any) && (patch.imageParameters as any).seed === null, "Random saves an explicit seed: null");
+  assert.equal(await seedInput.inputValue(), "", "Random clears the seed field");
+  await seedInput.fill("-1");
+  await seedInput.press("Tab");
+  patch = await lastPatch(page);
+  assert.equal((patch?.imageParameters as any)?.seed, null, "A negative seed is treated as random, never sent as -1");
+
   // Resolution presets: Portrait (832x1216)
   await settings.locator('input[name="novelAiResolutionPreset"][value="portrait"]').check();
   patch = await lastPatch(page);

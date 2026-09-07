@@ -45,6 +45,8 @@ import {
   NOVELAI_GUIDANCE_MIN,
   NOVELAI_NOTICE,
   NOVELAI_RESOLUTION_PRESETS,
+  NOVELAI_SEED_MAX,
+  parseNovelAiSeed,
   NOVELAI_STEPS_MAX,
   NOVELAI_STEPS_MIN,
   type ConnectionCatalogKind,
@@ -435,6 +437,10 @@ export class VisualNovelSettingsPanel {
                   <span>Sampler</span>
                   <select name="novelAiSampler" aria-label="NovelAI sampler"></select>
                 </div>
+                <div data-row data-live>
+                  <label data-field><span>Seed <small>(leave empty for a random seed each image)</small></span><input name="novelAiSeed" type="number" inputmode="numeric" min="0" max="${NOVELAI_SEED_MAX}" step="1" placeholder="Random" /></label>
+                  <button type="button" data-novelai-random-seed>Random</button>
+                </div>
               </div>
             </div>
           </div>
@@ -596,6 +602,12 @@ export class VisualNovelSettingsPanel {
       if (target.name === "bgmVolume" || target.name === "sfxVolume") this.updateVolumeLabels();
       if (target.name === "textSpeed") this.restartSample();
       if (target.name === "textScale") this.root.querySelector<HTMLElement>("[data-sample-stage]")!.style.setProperty("--sample-scale", String(clamp(Number(target.value), TEXT_SCALE_MIN, TEXT_SCALE_MAX, this.config.textScale)));
+    });
+    // "Random" clears the NovelAI seed and saves (an explicit null overrides a stored seed).
+    this.root.querySelector<HTMLButtonElement>("[data-novelai-random-seed]")?.addEventListener("click", () => {
+      const seed = this.control<HTMLInputElement>("novelAiSeed");
+      seed.value = "";
+      this.handleLiveChange(seed);
     });
     // Setup-card copies of shared choices live outside the form.
     this.root.querySelector("[data-setup]")!.addEventListener("change", (event) => {
@@ -804,6 +816,7 @@ export class VisualNovelSettingsPanel {
       case "novelAiSteps":
       case "novelAiGuidance":
       case "novelAiSampler":
+      case "novelAiSeed":
       case "novelAiResolutionPreset":
       case "novelAiWidth":
       case "novelAiHeight":
@@ -871,6 +884,14 @@ export class VisualNovelSettingsPanel {
         params.sampler = val;
         return { key: "sampler", value: val };
       }
+      case "novelAiSeed": {
+        // Empty means random. Send an explicit null: the host merges Cue's
+        // parameters over the connection defaults, and Lumiverse stores -1 for
+        // "shuffle", which NovelAI rejects. null makes the provider pick a seed.
+        const val = parseNovelAiSeed(target.value);
+        params.seed = val;
+        return { key: "seed", value: val };
+      }
       case "novelAiResolutionPreset": {
         if (target.value === "custom") {
           this.showCustom("novelAiDimensions", true);
@@ -928,6 +949,7 @@ export class VisualNovelSettingsPanel {
       return option;
     }));
     samplerSelect.value = params.sampler;
+    this.control<HTMLInputElement>("novelAiSeed").value = params.seed === null ? "" : String(params.seed);
 
     this.setRadio("novelAiResolutionPreset", params.preset);
     this.showCustomQuiet("novelAiDimensions", params.preset === "custom");

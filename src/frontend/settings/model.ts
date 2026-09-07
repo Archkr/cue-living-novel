@@ -480,11 +480,22 @@ export type NovelAiParameters = {
   steps: number;
   guidance: number;
   sampler: string;
+  /** null = random (the provider picks one per image). */
+  seed: number | null;
   resolution: string;
   preset: NovelAiResolutionPresetId;
   width: number;
   height: number;
 };
+
+/** NovelAI accepts seeds as integers in [0, 2^53]. */
+export const NOVELAI_SEED_MAX = 9007199254740992;
+
+/** Parse a seed field; empty, non-integer, negative, or out-of-range means random (null). */
+export function parseNovelAiSeed(value: unknown): number | null {
+  const n = typeof value === "string" ? (value.trim() === "" ? NaN : Number(value)) : value;
+  return typeof n === "number" && Number.isInteger(n) && n >= 0 && n <= NOVELAI_SEED_MAX ? n : null;
+}
 
 export function readNovelAiParameters(params: Record<string, unknown> | undefined | null): NovelAiParameters {
   const p = params ?? {};
@@ -519,6 +530,7 @@ export function readNovelAiParameters(params: Record<string, unknown> | undefine
     steps,
     guidance,
     sampler,
+    seed: parseNovelAiSeed(p.seed),
     resolution: resStr,
     preset,
     width: dims.width,

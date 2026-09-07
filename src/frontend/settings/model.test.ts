@@ -22,6 +22,8 @@ import {
   effectiveImageConnection,
   isNovelAiConnection,
   readNovelAiParameters,
+  parseNovelAiSeed,
+  NOVELAI_SEED_MAX,
   novelAiResolutionPresetFor,
   buildNovelAiSamplerOptions,
   snapDimension,
@@ -236,6 +238,28 @@ describe("NovelAI effective connection & parameters", () => {
     expect(novelAiResolutionPresetFor("1536x1024")).toBe("custom");
     expect(novelAiResolutionPresetFor("custom-anything")).toBe("custom");
     expect(novelAiResolutionPresetFor("")).toBe("custom");
+  });
+
+  test("parseNovelAiSeed: empty, -1 (Lumiverse shuffle), fractions, and out-of-range mean random", () => {
+    expect(parseNovelAiSeed("")).toBeNull();
+    expect(parseNovelAiSeed("   ")).toBeNull();
+    expect(parseNovelAiSeed(undefined)).toBeNull();
+    expect(parseNovelAiSeed(null)).toBeNull();
+    expect(parseNovelAiSeed(-1)).toBeNull();
+    expect(parseNovelAiSeed("-1")).toBeNull();
+    expect(parseNovelAiSeed(1.5)).toBeNull();
+    expect(parseNovelAiSeed(NOVELAI_SEED_MAX + 2)).toBeNull();
+    expect(parseNovelAiSeed("abc")).toBeNull();
+    expect(parseNovelAiSeed(0)).toBe(0);
+    expect(parseNovelAiSeed("12345")).toBe(12345);
+    expect(parseNovelAiSeed(NOVELAI_SEED_MAX)).toBe(NOVELAI_SEED_MAX);
+  });
+
+  test("readNovelAiParameters exposes the seed and treats an invalid stored seed as random", () => {
+    expect(readNovelAiParameters({}).seed).toBeNull();
+    expect(readNovelAiParameters({ seed: -1 }).seed).toBeNull();
+    expect(readNovelAiParameters({ seed: 777 }).seed).toBe(777);
+    expect(readNovelAiParameters({ seed: "4242" }).seed).toBe(4242);
   });
 
   test("readNovelAiParameters defaults, clamps, and string coercion", () => {
