@@ -86,11 +86,12 @@ function stripIgnoredTags(content: string, tags: readonly string[]): string {
   return output;
 }
 
-const INLINE_IMG_REGEX = /<img\s*=\s*["']([^"']+)["']\s*\/?>|<img\s*=\s*([^\s"'>][^\s>]*?)[\s>]|<img\b[^>]*?\bsrc\s*=\s*["']([^"']+)["'][^>]*?\/?>|\{\{img::([^\}]+)\}\}/gi;
+// `<pimg="name">` is RisuAI/LumiRealm's inline card image tag; treat it exactly like `<img="name">`.
+const INLINE_IMG_REGEX = /<p?img\s*=\s*["']([^"']+)["']\s*\/?>|<p?img\s*=\s*([^\s"'>][^\s>]*?)[\s>]|<p?img\b[^>]*?\bsrc\s*=\s*["']([^"']+)["'][^>]*?\/?>|\{\{img::([^\}]+)\}\}/gi;
 
 /**
  * Extract inline card asset references like `<img="asset_name">`,
- * `<img src="asset_name">`, or `{{img::asset_name}}`.
+ * `<pimg="asset_name">` (RisuAI/LumiRealm), `<img src="asset_name">`, or `{{img::asset_name}}`.
  */
 export function extractInlineCardImages(text: string): { text: string; assetNames: string[] } {
   const assetNames: string[] = [];

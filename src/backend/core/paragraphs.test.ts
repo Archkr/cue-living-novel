@@ -49,6 +49,17 @@ describe("narrative preparation", () => {
   });
 
 
+  test("extractInlineCardImages treats RisuAI <pimg=\"name\"> like <img=\"name\">", () => {
+    const raw = "Seated upon the throne was the Empress.\n\n<pimg=\"aurelia\">\n\nHer golden eyes shone.\n\n<pimg=\"elizabeth_smirking\">";
+    const extracted = extractInlineCardImages(raw);
+    expect(extracted.assetNames).toEqual(["aurelia", "elizabeth_smirking"]);
+    expect(extracted.text).not.toContain("pimg");
+    const prepared = prepareNarrative(raw);
+    expect(prepared.paragraphs.map((p) => p.text)).toEqual(["Seated upon the throne was the Empress.", "Her golden eyes shone."]);
+    const placed = extractInlineCardImagesWithParagraphs(raw, prepared.paragraphs);
+    expect(placed).toEqual([{ name: "aurelia", paragraphIndex: 0 }, { name: "elizabeth_smirking", paragraphIndex: 1 }]);
+  });
+
   test("extractInlineCardImages supports unquoted img=expression tags", () => {
     const raw = 'An expression: <img=neeko_curious> and quoted <img="neeko_happy">';
     const extracted = extractInlineCardImages(raw);
