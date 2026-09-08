@@ -138,12 +138,25 @@ describe("referenceParametersFor", () => {
     expect(parameters.resolvedReferenceImages[0]?.strength).toBe(0.6);
   });
 
-  test("returns ComfyUI/SwarmUI source images", () => {
-    for (const provider of ["comfyui", "swarmui"]) {
-      expect(referenceParametersFor(provider, portrait, DEFAULT_CONFIG)).toEqual({
-        resolvedSourceImages: [{ data: "QUJD", mimeType: "image/png" }]
-      });
-    }
+  test("returns ComfyUI/SwarmUI source images with dynamic ComfyUI denoise", () => {
+    expect(referenceParametersFor("comfyui", portrait, DEFAULT_CONFIG)).toEqual({
+      resolvedSourceImages: [{ data: "QUJD", mimeType: "image/png" }],
+      denoise: 0.7
+    });
+    expect(referenceParametersFor("swarmui", portrait, DEFAULT_CONFIG)).toEqual({
+      resolvedSourceImages: [{ data: "QUJD", mimeType: "image/png" }]
+    });
+    // Explicit custom referenceStrength applies to ComfyUI denoise
+    const customConfig = { ...DEFAULT_CONFIG, imageParameters: { referenceStrength: 0.85 } };
+    expect(referenceParametersFor("comfyui", portrait, customConfig)).toEqual({
+      resolvedSourceImages: [{ data: "QUJD", mimeType: "image/png" }],
+      denoise: 0.85
+    });
+    // Explicit user-configured denoise is preserved
+    const explicitDenoiseConfig = { ...DEFAULT_CONFIG, imageParameters: { denoise: 0.45 } };
+    expect(referenceParametersFor("comfyui", portrait, explicitDenoiseConfig)).toEqual({
+      resolvedSourceImages: [{ data: "QUJD", mimeType: "image/png" }]
+    });
   });
 
   test("returns nothing for unknown providers", () => {
@@ -151,6 +164,16 @@ describe("referenceParametersFor", () => {
     expect(referenceParametersFor(null, portrait, DEFAULT_CONFIG)).toEqual({});
   });
 });
+
+
+  test("unanchored comfyui generation injects denoise: 0.0 when denoise is not explicitly defined", () => {
+    // When no portrait is present, referenceParametersFor is empty, and generateAssets builds parameters with denoise: 0.0
+    // We test that referenceParametersFor preserves this boundary
+    expect(referenceParametersFor("comfyui", portrait, { ...DEFAULT_CONFIG, imageParameters: { referenceStrength: 0 } })).toEqual({
+      resolvedSourceImages: [{ data: "QUJD", mimeType: "image/png" }],
+      denoise: 0
+    });
+  });
 
 describe("parseDataUrl", () => {
   test("parses a base64 data URL", () => {

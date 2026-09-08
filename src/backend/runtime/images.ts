@@ -636,6 +636,14 @@ export function referenceParametersFor(
       }]
     };
   }
+  if (provider === "comfyui") {
+    const raw = Number(config.imageParameters.referenceStrength);
+    const strength = Number.isFinite(raw) ? Math.min(1, Math.max(0, raw)) : 0.7;
+    return {
+      resolvedSourceImages: [{ data: portrait.data, mimeType: portrait.mimeType }],
+      ...(config.imageParameters.denoise !== undefined ? {} : { denoise: strength })
+    };
+  }
   return {
     resolvedSourceImages: [{ data: portrait.data, mimeType: portrait.mimeType }]
   };
@@ -974,7 +982,10 @@ export async function generateAssets(
           }
           const parameters = portrait && provider
             ? { ...config.imageParameters, ...referenceParametersFor(provider, portrait, config) }
-            : config.imageParameters;
+            : {
+                ...config.imageParameters,
+                ...(provider === "comfyui" && config.imageParameters.denoise === undefined ? { denoise: 0.0 } : {})
+              };
           const { connectionId, workflowId } = splitConnectionSelection(config.imageConnectionId);
           const effectiveParameters = {
             ...parameters,

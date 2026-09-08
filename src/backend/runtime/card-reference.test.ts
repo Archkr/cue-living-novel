@@ -343,7 +343,8 @@ describe("card sprite reference source", () => {
   test("card portraits feed referenceParametersFor exactly like captured ones", () => {
     const portrait = { data: "QUJD", mimeType: "image/webp" };
     expect(referenceParametersFor("comfyui", portrait, DEFAULT_CONFIG)).toEqual({
-      resolvedSourceImages: [{ data: "QUJD", mimeType: "image/webp" }]
+      resolvedSourceImages: [{ data: "QUJD", mimeType: "image/webp" }],
+      denoise: 0.7
     });
     expect(referenceParametersFor("novelai", portrait, DEFAULT_CONFIG)).toEqual({
       resolvedReferenceImages: [{ data: "QUJD", strength: 0.6, infoExtracted: 1, refType: "character" }]
