@@ -77,22 +77,50 @@ try {
     const dockPill = dockHost?.shadowRoot?.querySelector("[data-dock]");
     const dialogueBox = stageHost?.shadowRoot?.querySelector("[data-vn-theme-host]")?.shadowRoot?.querySelector("[data-vn-dialogue]");
     const exitBtn = stageHost?.shadowRoot?.querySelector("[data-vn-exit]");
+    const panelDockHost = stageHost?.shadowRoot?.querySelector("[data-vn-panel-layer]");
+    const panelLauncher = panelDockHost?.shadowRoot?.querySelector(".launcher");
     return {
       dock: dockPill?.getBoundingClientRect(),
       dialogue: dialogueBox?.getBoundingClientRect(),
       exit: exitBtn?.getBoundingClientRect(),
+      panelLauncher: panelLauncher?.getBoundingClientRect(),
     };
   });
   console.log("Mobile bounding boxes:", mobileBoxes);
   assert.ok(mobileBoxes.dock && mobileBoxes.dialogue, "Both dock and dialogue must be laid out on mobile");
   assert.ok(mobileBoxes.dock.y + mobileBoxes.dock.height < mobileBoxes.dialogue.y, "Dock must sit well above bottom dialogue");
   if (mobileBoxes.exit) {
-    // Dock is centered, exit is top right: verify they do not overlap
     assert.ok(mobileBoxes.dock.x + mobileBoxes.dock.width < mobileBoxes.exit.x || mobileBoxes.dock.y > mobileBoxes.exit.y + mobileBoxes.exit.height, "Dock must not overlap exit button");
+  }
+  if (mobileBoxes.panelLauncher) {
+    assert.ok(mobileBoxes.dock.x > mobileBoxes.panelLauncher.x + mobileBoxes.panelLauncher.width || mobileBoxes.dock.y > mobileBoxes.panelLauncher.y + mobileBoxes.panelLauncher.height, "Dock must not overlap PanelDock launcher button on the left");
   }
 
   await mobilePage.screenshot({ path: ".cache/speech-integration/mobile-stage-dock.png" });
   await mobilePage.close();
+  // Also test ultra-narrow 360px viewport (e.g. Android 360x640)
+  const narrowPage = await browser.newPage({ viewport: { width: 360, height: 640 } });
+  await narrowPage.goto(`http://127.0.0.1:${server.port}/`);
+  await narrowPage.locator("[data-integration-ready]").waitFor();
+  const narrowBoxes = await narrowPage.evaluate(() => {
+    const stageHost = document.querySelector("[data-vn-stage-host]");
+    const dockHost = stageHost?.shadowRoot?.querySelector(".vn-speech-dock");
+    const dockPill = dockHost?.shadowRoot?.querySelector("[data-dock]");
+    const exitBtn = stageHost?.shadowRoot?.querySelector("[data-vn-exit]");
+    const panelDockHost = stageHost?.shadowRoot?.querySelector("[data-vn-panel-layer]");
+    const panelLauncher = panelDockHost?.shadowRoot?.querySelector(".launcher");
+    return {
+      dock: dockPill?.getBoundingClientRect(),
+      exit: exitBtn?.getBoundingClientRect(),
+      panelLauncher: panelLauncher?.getBoundingClientRect(),
+    };
+  });
+  console.log("Narrow 360px boxes:", narrowBoxes);
+  assert.ok(narrowBoxes.dock && narrowBoxes.exit && narrowBoxes.panelLauncher, "Elements must exist on 360px");
+  assert.ok(narrowBoxes.dock.x + narrowBoxes.dock.width < narrowBoxes.exit.x || narrowBoxes.dock.y > narrowBoxes.exit.y + narrowBoxes.exit.height, "Dock must not overlap exit on 360px");
+  assert.ok(narrowBoxes.dock.x > narrowBoxes.panelLauncher.x + narrowBoxes.panelLauncher.width || narrowBoxes.dock.y > narrowBoxes.panelLauncher.y + narrowBoxes.panelLauncher.height, "Dock must not overlap panelLauncher on 360px");
+  await narrowPage.close();
+
 
   // 3. Reader Auto Mode coordination with Speech Playback
   console.log("--- Testing Reader Auto vs Speech Playback ---");
@@ -201,6 +229,14 @@ try {
   const textAfterEcho = await addInput.inputValue();
   console.log("Add input value after config echo:", JSON.stringify(textAfterEcho));
   assert.equal(textAfterEcho, "Sayori", "Uncommitted draft name must be preserved across config echo");
+  // Test character with quotes in name: no selector syntax crash
+  await addInput.fill('The "Boss"');
+  await addInput.press("Enter");
+  await page.waitForTimeout(50);
+  const bossDraft = await settingsCard.locator('[data-speech-draft-row]').count();
+  console.log("Draft rows after special quotes name:", bossDraft);
+  assert.equal(bossDraft, 2, "Character with quotes must create draft row without selector syntax crash");
+
 
   console.log("ALL INTEGRATION CHECKS PASSED!");
 } finally {

@@ -420,9 +420,11 @@ export function setupVisualNovelFrontend(baseContext: SpindleFrontendContext): (
   };
 
   const syncSpeechCursor = (view: TurnView | null, paragraphIndex: number): void => {
-    speech.setCursor(view && view.status === "ready" ? speechCursorFor(view, paragraphIndex) : null);
+    speech?.setCursor(view && view.status === "ready" ? speechCursorFor(view, paragraphIndex) : null);
   };
-  const onVisibilityChanged = (): void => speech.setVisible(!document.hidden);
+  const onVisibilityChanged = (): void => {
+    if (speech) speech.setVisible(!document.hidden);
+  };
   document.addEventListener("visibilitychange", onVisibilityChanged);
 
   let currentBgm: string | null = null;
@@ -523,7 +525,7 @@ export function setupVisualNovelFrontend(baseContext: SpindleFrontendContext): (
       speechDock.setStatus(status);
       if (status.kind === "loading" || status.kind === "playing" || status.kind === "paused") {
         stage.holdAutoPlay();
-      } else {
+      } else if (active) {
         stage.checkAutoPlay();
       }
     },
@@ -735,6 +737,7 @@ export function setupVisualNovelFrontend(baseContext: SpindleFrontendContext): (
     const activeChatId = chatId();
     if (wasActive && activeChatId) ctx.sendToBackend({ type: "vn_view", chatId: activeChatId, open: false });
     // Closing the view stops speech, aborts any request, and clears the session cache.
+    stage.toggleAutoPlay(false);
     speech.setActive(false);
     speechDock.setOverlayActive(false);
     audioEngine.stopAll();

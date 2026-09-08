@@ -37,11 +37,10 @@ button:disabled { opacity: .5; cursor: default; }
     left: auto;
     right: calc(max(0.75rem, env(safe-area-inset-right)) + 7.5rem);
     transform: none;
-    max-width: calc(100% - 8.5rem);
+    max-width: calc(100% - 13.5rem);
   }
-  [data-status] { max-width: 6.5rem; }
-}
-`;
+  [data-status] { max-width: 4rem; }
+}`;
 
 export class SpeechDock {
   private readonly host: HTMLElement;

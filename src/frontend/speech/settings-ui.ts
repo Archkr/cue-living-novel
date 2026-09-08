@@ -81,6 +81,8 @@ export class SpeechSettingsSection {
   private pendingOverrideNames = new Set<string>();
   /** Uncommitted character name in the Add input; preserved across re-renders. */
   private draftAddName = "";
+  /** Uncommitted text values for actively edited fields (e.g. delivery tag, voice inputs). */
+  private activeDrafts = new Map<string, string>();
   /** Tracked chat id to clear uncommitted name drafts on chat switch. */
   private lastChatId = "";
   private destroyed = false;
@@ -176,7 +178,8 @@ export class SpeechSettingsSection {
     input.type = "text";
     input.setAttribute("data-speech-field", fieldKey);
     input.placeholder = "Profile default voice";
-    input.value = selected?.voice ?? "";
+    const draftVoice = this.activeDrafts.get(fieldKey);
+    input.value = draftVoice !== undefined ? draftVoice : (selected?.voice ?? "");
     input.disabled = !selected;
     const listId = `voices-${Math.random().toString(36).slice(2, 8)}`;
     const datalist = document.createElement("datalist");
@@ -191,9 +194,11 @@ export class SpeechSettingsSection {
       }
     }
     input.addEventListener("input", () => {
+      this.activeDrafts.set(fieldKey, input.value);
       if (selected) selected.voice = input.value;
     });
     input.addEventListener("change", () => {
+      this.activeDrafts.delete(fieldKey);
       if (selected) onChange({ ...selected, voice: input.value });
     });
     const loadButton = document.createElement("button");
@@ -260,6 +265,9 @@ export class SpeechSettingsSection {
       try {
         selectionStart = activeEl.selectionStart;
         selectionEnd = activeEl.selectionEnd;
+        if (activeField) {
+          this.activeDrafts.set(activeField, activeEl.value);
+        }
       } catch { /* ignored for non-text inputs */ }
     }
 
@@ -267,6 +275,7 @@ export class SpeechSettingsSection {
     if (currentChatId !== this.lastChatId) {
       this.lastChatId = currentChatId;
       this.draftAddName = "";
+      this.activeDrafts.clear();
     }
 
     const settings = this.settings;
@@ -464,7 +473,8 @@ export class SpeechSettingsSection {
     tagInput.type = "text";
     tagInput.setAttribute("data-speech-field", "delivery-tag");
     tagInput.placeholder = "e.g. whispers — empty sends no tag";
-    tagInput.value = settings.deliveryTag;
+    const draftTag = this.activeDrafts.get("delivery-tag");
+    tagInput.value = draftTag !== undefined ? draftTag : settings.deliveryTag;
     const tagListId = "gemini-tags";
     const tagList = document.createElement("datalist");
     tagList.id = tagListId;
@@ -475,9 +485,13 @@ export class SpeechSettingsSection {
     }
     tagInput.setAttribute("list", tagListId);
     tagInput.addEventListener("input", () => {
+      this.activeDrafts.set("delivery-tag", tagInput.value);
       this.settings.deliveryTag = tagInput.value;
     });
-    tagInput.addEventListener("change", () => this.save((next) => { next.deliveryTag = tagInput.value.trim(); }));
+    tagInput.addEventListener("change", () => {
+      this.activeDrafts.delete("delivery-tag");
+      this.save((next) => { next.deliveryTag = tagInput.value.trim(); });
+    });
     tagLabel.append(tagTitle, tagInput, tagList);
     tagLabel.hidden = settings.deliveryMode !== "gemini-audio-tags";
     const compat = document.createElement("label");
@@ -524,7 +538,9 @@ export class SpeechSettingsSection {
 
     // Restore focus and text selection if an input had active focus
     if (activeField) {
-      const restored = this.shadow.querySelector(`[data-speech-field="${activeField}"]`) as HTMLElement | null;
+      // Find element by iterating attributes to avoid selector syntax errors with special characters
+      const allElements = Array.from(this.shadow.querySelectorAll<HTMLElement>("[data-speech-field]"));
+      const restored = allElements.find((el) => el.getAttribute("data-speech-field") === activeField) ?? null;
       if (restored) {
         restored.focus();
         if ((restored instanceof HTMLInputElement || restored instanceof HTMLTextAreaElement) && selectionStart !== null && selectionEnd !== null) {

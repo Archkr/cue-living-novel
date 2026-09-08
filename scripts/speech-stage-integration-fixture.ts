@@ -1,4 +1,5 @@
 import { VnStage } from "../src/frontend/stage/vn-stage.js";
+import { PanelDock } from "../src/frontend/stage/panel-dock.js";
 import { SpeechDock } from "../src/frontend/speech/ui.js";
 import { SpeechController, type SpeechAudioElement } from "../src/frontend/speech/controller.js";
 import { createSpeechTransport } from "../src/frontend/speech/transport.js";
@@ -77,6 +78,8 @@ const stage = new VnStage({
     syncCursor(paragraphIndex);
   },
 });
+
+const panels = new PanelDock(stage.panelMount);
 
 speechDock = new SpeechDock({
   mount: stage.panelMount,
