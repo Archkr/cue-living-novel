@@ -415,8 +415,14 @@ export function setupVisualNovelFrontend(baseContext: SpindleFrontendContext): (
     },
     onReroll: () => {
       const activeChatId = chatId();
-      if (!activeChatId || !turn) return;
+      if (!activeChatId) return;
       stage.setPhase("planning");
+      if (!turn) {
+        // No turn exists (an unselected macro greeting): re-check the latest
+        // message instead of retrying a turn that was never planned.
+        ctx.sendToBackend({ type: "vn_refresh", chatId: activeChatId });
+        return;
+      }
       ctx.sendToBackend({
         type: "vn_retry_turn",
         chatId: activeChatId,
@@ -793,6 +799,20 @@ export function setupVisualNovelFrontend(baseContext: SpindleFrontendContext): (
       stage.setAssetProgress(computeAssetProgress(turn));
       const cursor = stage.getState().currentParagraphIndex;
       if (message.asset.paragraphIndex <= cursor) void syncImageForParagraph(cursor);
+      return;
+    }
+    if (type === "vn_waiting" && message.type === "vn_waiting") {
+      if (message.chatId !== chatId()) return;
+      turn = null;
+      pendingNextTurn = null;
+      panels.setTurn(null);
+      stage.reset();
+      reportStageError({
+        message: "This opening message holds several scenes, and none is selected yet. Pick a starting scene in the chat view, then use Try again or reopen Cue.",
+        source: "waiting",
+        retryable: true,
+        retryScope: "Checks the latest message again.",
+      });
       return;
     }
     if (type === "vn_planning" && message.type === "vn_planning") {

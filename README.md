@@ -33,6 +33,8 @@ The pipeline never mutates canonical chat messages. It writes only extension-own
 
 As with any generative system, image-provider speed and visual identity quality depend on the selected model, provider, and prompt settings. Cue does not promise a specific provider result.
 
+RisuAI card greetings that pack several alternative scenes into one message are macro-resolved before planning, so only the selected scene is shown. Limitation: no host event fires when a scene picker in the chat is clicked, so a changed selection is picked up only when Cue is reopened, when state is requested again, through the Try again control on the waiting card (`vn_refresh`), or through Try again on a visible turn (`vn_retry_turn` re-resolves first and replans when the selection changed).
+
 ## Scene image reuse (temporary cache)
 
 Cue keeps a small, in-memory cache of the scene images it generated so an

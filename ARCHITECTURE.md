@@ -58,6 +58,7 @@ Lumiverse staging host
 | `src/frontend/settings` | Lumiverse settings surface |
 | `src/frontend/theme` | stable `data-vn-*` selectors, base theme, scene-image fit attribute, CSS isolation, network-fetch stripping |
 | `src/backend/runtime/controller.ts` | host event handling, submission reconciliation, active-turn ownership, visual-state and portrait load/save |
+| `src/backend/runtime/message-text.ts` | macro resolution and cleanup of assistant message text before planning |
 | `src/backend/runtime/planner.ts` | sidecar request, JSON repair and fallback plan, scene/cue/choice construction, active-character and attire attribution, per-paragraph speaker nameplates, deterministic expression assignment |
 | `src/backend/runtime/images.ts` | deterministic prompt compilation through the vendored Inlay compiler, image generation, per-provider asset scheduling, reference-portrait anchoring, asset updates |
 | `src/backend/runtime/storage.ts` | versioned per-user config, per-chat state, protagonist visual state, per-chat portrait store, durable character-appearance memory, serialized writes |
@@ -68,6 +69,22 @@ Lumiverse staging host
 | `src/shared/character.ts` | closed pose/expression catalogue (92 entries), pure expression selection, single-character identity types |
 | `src/shared/contracts.ts` | strict Zod trust-boundary schemas |
 | `src/protocol.ts` | narrow frontend/backend message protocol |
+
+## Message intake and macro resolution
+
+RisuAI cards ported through LumiRealm keep every alternative first scene inside one greeting message, wrapped in CBS `{{#when}}` blocks, plus a `$messageSelector` placeholder line that a display regex script turns into a scene picker. The raw stored text never changes; picking a scene only sets a chat variable.
+
+Cue therefore never plans raw message text. Every path that feeds a message into planning (GENERATION_ENDED, swipe/edit reconcile, chat switch, `vn_get_state` bootstrap, retry, `vn_refresh`) goes through `resolveMessageText` in `src/backend/runtime/message-text.ts`:
+
+1. Fast path: a message without macro syntax and without a placeholder-only line is returned byte-identical; the host is not called.
+2. `spindle.macros.resolve(text, { chatId, commit: false })` runs the host macro engine. With LumiRealm active, its interceptor collapses the `{{#when}}` blocks to the selected scene. On error or a missing API the raw text is used.
+3. `cleanResolvedText` removes what is left: unresolved `{{#...}}...{{/...}}` blocks together with their content (an unselected scene must not leak), unresolved inline `{{...}}` tokens, and placeholder-only `$identifier` lines. `<pimg>`/`<img>` tags, `{{img::...}}` references, and `{{char}}`/`{{user}}` display macros pass through; the planner substitutes the display macros with real names.
+
+The turn fingerprint (`fingerprintForMessage`) is computed on the resolved text, so picking a different scene on the same raw message is a new turn and the old plan is not reused. History messages read for planner context resolve the same way, bounded to messages that contain macro syntax and cached per message id + swipe within one planning run. `vn_get_state` re-resolves the latest assistant message when it contains macro syntax, so a selection change is picked up when the view opens; `vn_refresh` does the same on demand.
+
+Unselected-greeting rule (evidence-based, no bare length heuristic): a message enters the waiting state only when the raw text contained macro blocks or a placeholder line AND either the cleaned text is empty, or there is explicit default-branch evidence — the raw greeting carries a placeholder-only line, has at least two selectable blocks, and the cleaned text equals the first block's single-line body (the branch such cards fall into while the selection variable is unset). Then nothing is planned and no images are generated; the backend sends `vn_waiting` and the reading view shows a card asking the reader to pick a starting scene in the chat. A legitimate short opening scene without that evidence is planned normally. Detection is structural; the placeholder wording is never matched.
+
+When a greeting is re-resolved to a different scene while it is the chat's only assistant turn, the chat's durable identity state (frozen protagonist visual state, character registry, per-chat appearance roster, scene lineage and scene-image cache scope) is reset to the empty pre-greeting baseline before replanning, so the discarded scene's cast cannot leak into the newly selected one. Mid-chat turns are never reset. Retry (`vn_retry_turn`) re-resolves macro-bearing messages first and replans when the resolution changed. A cancel, deletion, edit event, or new generation that arrives while a macro resolve is in flight supersedes that intake (per-chat intake epoch), so a stale resolve can never enqueue a plan afterwards.
 
 ## Turn flow
 

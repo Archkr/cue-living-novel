@@ -19,6 +19,14 @@ import { resolveNativeCardJobs } from "./native-assets.js";
 import { CACHE_JOB_PROVIDER, createAssetJobs, generateAssets, resolveCacheCues, retainPlanEpisodes } from "./images.js";
 import { SceneImageCache, sceneImageScope } from "../core/scene-image-cache.js";
 import { fingerprintForMessage, planTurn } from "./planner.js";
+import {
+  isUnselectedGreeting,
+  needsResolution,
+  resolutionCacheKey,
+  resolveContextMessages,
+  resolveMessageText,
+  type MessageResolutionCache
+} from "./message-text.js";
 import { loadConnectionCatalog } from "./connections.js";
 import {
   clearAudioCatalogCache,
@@ -37,6 +45,7 @@ import {
   loadTurnRecord,
   mergeCharacterAppearanceFromState,
   mergePlannerCharacters,
+  resetChatIdentityState,
   saveCharacterRegistry,
   saveChatState,
   saveSingleCharacterState,
@@ -53,6 +62,18 @@ type NormalizedChatMessage = ChatMessageDTO & {
 
 const planningQueue = new PlanningQueue();
 const assetControllers = new Map<string, AbortController>();
+/**
+ * Per-chat intake epoch. Macro resolution awaits the host before the planning
+ * queue can see the job, so a cancel, a new generation, a deletion, or a
+ * newer message event during that await could otherwise let a stale intake
+ * enqueue afterwards. Bumping the epoch invalidates every intake that started
+ * before the bump.
+ */
+const intakeEpochs = new Map<string, number>();
+function bumpIntakeEpoch(userId: string | undefined, chatId: string): void {
+  const key = runtimeKey(userId, chatId);
+  intakeEpochs.set(key, (intakeEpochs.get(key) ?? 0) + 1);
+}
 const activeTurnKeys = new Map<string, StoredTurnRecord["plan"]["key"]>();
 
 /**
@@ -425,12 +446,23 @@ async function bootstrapLatestAssistantTurn(spindle: SpindleAPI, chatId: string,
  * happens when replies arrived while the view was closed (they were skipped);
  * reopening the view must plan the latest reply.
  */
-async function recordIsStale(spindle: SpindleAPI, chatId: string, record: StoredTurnRecord): Promise<boolean> {
+async function recordIsStale(spindle: SpindleAPI, chatId: string, record: StoredTurnRecord, userId?: string): Promise<boolean> {
   const messages = await spindle.chat.getMessages(chatId) as NormalizedChatMessage[];
   const latest = [...messages].reverse().find((message) => !message.is_user && message.content.trim());
   if (!latest) return false;
   if (latest.id !== record.plan.key.assistantMessageId) return true;
-  const fingerprint = fingerprintForMessage({ id: latest.id, swipe_id: latest.swipe_id, content: latest.content });
+  // Fingerprints are stored on macro-resolved text: resolve before comparing,
+  // or an unchanged scene selection always looks stale and replans. Ordinary
+  // messages skip the host entirely (needsResolution fast path).
+  let content = latest.content;
+  if (needsResolution(content)) {
+    try {
+      content = await resolveMessageText(spindle, chatId, content, userId);
+    } catch (e) {
+      // Fall through with the raw text; the intake path cleans it the same way.
+    }
+  }
+  const fingerprint = fingerprintForMessage({ id: latest.id, swipe_id: latest.swipe_id, content });
   return fingerprint !== record.plan.key.sourceFingerprint;
 }
 
@@ -467,11 +499,37 @@ export async function sendState(
   } catch (error) {
     spindle.log.warn(`Stored visual novel turn could not be loaded; rebuilding it from chat: ${errorText(error)}`);
   }
+  // A stored turn can go stale without any chat event: a LumiRealm scene
+  // picker only sets a chat variable, so the same raw message text resolves
+  // to different narrative. Re-resolve BEFORE the state is sent, so a changed
+  // selection is never rendered from the stale stored turn first. Only
+  // messages that contain macro syntax reach the host.
+  let refreshTarget: NormalizedChatMessage | null = null;
+  let refreshResolution = "";
+  if (record) {
+    try {
+      const messages = await spindle.chat.getMessages(chatId) as NormalizedChatMessage[];
+      const latest = [...messages].reverse().find((message) => !message.is_user && message.content.trim());
+      if (latest && needsResolution(latest.content)) {
+        const resolved = await resolveMessageText(spindle, chatId, latest.content, userId);
+        const fingerprint = fingerprintForMessage({ id: latest.id, swipe_id: latest.swipe_id, content: resolved });
+        const matchesStored = record.plan.key.assistantMessageId === latest.id
+          && record.plan.key.swipeId === latest.swipe_id
+          && record.plan.key.sourceFingerprint === fingerprint;
+        if (!matchesStored) {
+          refreshTarget = latest;
+          refreshResolution = resolved;
+        }
+      }
+    } catch (error) {
+      spindle.log.warn(`Macro re-resolution check failed; sending the stored turn: ${errorText(error)}`);
+    }
+  }
   spindle.sendToFrontend({
     type: "vn_state",
     chatId,
     config,
-    turn: record ? await turnViewWithAudio(spindle, record) : null
+    turn: record && !refreshTarget ? await turnViewWithAudio(spindle, record) : null
   }, userId);
   const canPlan = config.enabled && views.isOpen(userId, chatId);
   if (!record) {
@@ -480,13 +538,23 @@ export async function sendState(
     return;
   }
   if (!canPlan) return;
-  if (await recordIsStale(spindle, chatId, record)) {
+  if (refreshTarget) {
+    // The scene selection changed with no chat event (the picker only sets a
+    // chat variable). Replan through the intake path with the already resolved
+    // text; paid work still only happens for the open view.
+    dbg(spindle, userId, `scene selection changed; replanning with the resolved text chat=${chatId}`);
+    spindle.sendToFrontend({ type: "vn_planning", chatId }, userId);
+    await processAssistantMessage(spindle, chatId, refreshTarget, refreshTarget.content, userId, { precomputedResolution: refreshResolution });
+    return;
+  }
+  if (await recordIsStale(spindle, chatId, record, userId)) {
     dbg(spindle, userId, `stored turn is stale (a newer reply arrived while the view was closed); planning the latest reply chat=${chatId}`);
     await bootstrapLatestAssistantTurn(spindle, chatId, userId);
   }
   // A close mid-batch leaves cancelled jobs behind. They are not resumed
   // automatically on reopen (a GENERATION_STARTED abort looks the same and a
   // newer reply is usually on its way); the reading view offers Retry for them.
+
 }
 
 async function persistActiveTurn(
@@ -584,12 +652,30 @@ async function processAssistantMessage(
   message: NormalizedChatMessage,
   content: string,
   userId?: string,
-  options?: { retry?: boolean; forceRegenerate?: boolean }
+  options?: { retry?: boolean; forceRegenerate?: boolean; precomputedResolution?: string }
 ): Promise<void> {
   if (!content.trim() || message.is_user) return;
+  // Macro intake: the raw stored text may hold every alternative scene of a
+  // RisuAI card greeting. Resolve once, cache for this planning run, and use
+  // the resolved text everywhere (fingerprint, plan, storage, frontend).
+  const intakeKey = runtimeKey(userId, chatId);
+  const intakeEpoch = intakeEpochs.get(intakeKey) ?? 0;
+  const resolutionCache: MessageResolutionCache = new Map();
+  const resolved = options?.precomputedResolution ?? await resolveMessageText(spindle, chatId, content, userId);
+  if ((intakeEpochs.get(intakeKey) ?? 0) !== intakeEpoch) {
+    dbg(spindle, userId, `intake for message ${message.id} superseded while resolving; dropped`);
+    return;
+  }
+  resolutionCache.set(resolutionCacheKey(message), resolved);
+  if (resolved !== content) dbg(spindle, userId, `message ${message.id} macro-resolved: ${content.length} -> ${resolved.length} chars`);
+  if (isUnselectedGreeting(content, resolved)) {
+    dbg(spindle, userId, `message ${message.id} has no narrative after macro resolution; waiting for a scene selection`);
+    spindle.sendToFrontend({ type: "vn_waiting", chatId, messageId: message.id, reason: "greeting_unselected" }, userId);
+    return;
+  }
   const path = turnPath(chatId, message.id, message.swipe_id);
   const existing = await loadTurnRecord(spindle, path, userId);
-  const fingerprint = fingerprintForMessage({ id: message.id, swipe_id: message.swipe_id, content });
+  const fingerprint = fingerprintForMessage({ id: message.id, swipe_id: message.swipe_id, content: resolved });
   if (!options?.retry && !options?.forceRegenerate && existing?.plan.key.sourceFingerprint === fingerprint) {
     const hasIncompleteJobs = existing.jobs.some(
       (job) => job.status === "failed" || job.status === "cancelled" || job.status === "queued" || job.status === "generating"
@@ -610,18 +696,37 @@ async function processAssistantMessage(
     const planningStartedAt = Date.now();
     const config = await loadConfig(spindle, userId);
     rememberDebugFlag(userId, config);
+    const messages = await spindle.chat.getMessages(chatId) as NormalizedChatMessage[];
+    // Greeting replacement: the same stored message re-resolved to a different
+    // scene while it is the chat's only assistant turn. The durable identity
+    // state (frozen protagonist, registry, appearance roster, scene lineage)
+    // came from the discarded scene; the predecessor state of such a chat is
+    // empty, so restore that instead of leaking the old cast into the newly
+    // selected scene. Mid-chat turns are never reset.
+    const assistantTurns = messages.filter((candidate) => !candidate.is_user && candidate.content.trim());
+    const replacesGreeting = existing !== null
+      && existing.plan.key.sourceFingerprint !== fingerprint
+      && assistantTurns.length === 1
+      && assistantTurns[0]!.id === message.id;
+    if (replacesGreeting) {
+      dbg(spindle, userId, `greeting ${message.id} re-resolved to a different scene; resetting this chat's identity state`);
+      await resetChatIdentityState(spindle, chatId, userId);
+      releaseSceneCacheScope(spindle, userId, chatId, "scope_cleared");
+    }
     const chatState = await loadChatState(spindle, chatId, userId);
     const singleCharacter = await loadSingleCharacterState(spindle, chatId, userId);
     const characterAppearance = await loadCharacterAppearance(spindle, userId, chatId);
     const characterRegistry = await loadCharacterRegistry(spindle, chatId, userId);
-    const messages = await spindle.chat.getMessages(chatId) as NormalizedChatMessage[];
+    const recentMessages = config.includeRecentMessages > 0
+      ? await resolveContextMessages(spindle, chatId, messages.slice(-config.includeRecentMessages), resolutionCache, userId)
+      : [];
     const result = await planTurn(spindle, {
       chatId,
       message,
-      content,
-      previousScene: options?.retry && existing ? existing.plan.scenes[0] ?? null : chatState.latestScene,
-      previousContinuity: options?.retry && existing ? existing.plan.initialContinuity : chatState.terminalContinuity,
-      recentMessages: config.includeRecentMessages > 0 ? messages.slice(-config.includeRecentMessages) : [],
+      content: resolved,
+      previousScene: replacesGreeting ? null : options?.retry && existing ? existing.plan.scenes[0] ?? null : chatState.latestScene,
+      previousContinuity: replacesGreeting ? null : options?.retry && existing ? existing.plan.initialContinuity : chatState.terminalContinuity,
+      recentMessages,
       config,
       singleCharacter,
       characterAppearance,
@@ -661,7 +766,7 @@ async function processAssistantMessage(
           spindle,
           chatId,
           plan: result.plan,
-          content,
+          content: resolved,
           speakerName: message.name,
           userId,
         });
@@ -862,6 +967,19 @@ async function retryTurn(
 
   const path = turnPath(chatId, message.id, message.swipe_id);
   const existing = await loadTurnRecord(spindle, path, userId);
+
+  // A scene picker may have changed since this turn was planned. Re-resolve
+  // macro-bearing messages first; a resolution that no longer matches the
+  // stored plan replans instead of regenerating the discarded scene's images.
+  if (needsResolution(message.content)) {
+    const resolved = await resolveMessageText(spindle, chatId, message.content, userId);
+    const fingerprint = fingerprintForMessage({ id: message.id, swipe_id: message.swipe_id, content: resolved });
+    if (existing?.plan.key.sourceFingerprint !== fingerprint) {
+      await processAssistantMessage(spindle, chatId, message, message.content, userId, { retry: true, precomputedResolution: resolved });
+      return;
+    }
+  }
+
   const config = await loadConfig(spindle, userId);
   rememberDebugFlag(userId, config);
   const characterAppearance = await loadCharacterAppearance(spindle, userId, chatId);
@@ -1058,9 +1176,18 @@ async function handleFrontendMessage(spindle: SpindleAPI, request: FrontendReque
       await markAssetReady(spindle, request, userId);
       return;
     case "vn_cancel": {
+      bumpIntakeEpoch(userId, request.chatId);
       planningQueue.cancelChat(userId, request.chatId);
       assetControllers.get(runtimeKey(userId, request.chatId))?.abort("Cancelled from the visual novel UI.");
       releaseSceneCacheAdmission(spindle, userId, request.chatId, "cancel");
+      return;
+    }
+    case "vn_refresh": {
+      const messages = await spindle.chat.getMessages(request.chatId) as NormalizedChatMessage[];
+      const latest = [...messages].reverse().find((message) => !message.is_user && message.content.trim());
+      if (!latest) return;
+      spindle.sendToFrontend({ type: "vn_planning", chatId: request.chatId }, userId);
+      await processAssistantMessage(spindle, request.chatId, latest, latest.content, userId);
       return;
     }
     case "vn_retry_turn": {
@@ -1091,6 +1218,7 @@ async function clearDeletedTurn(spindle: SpindleAPI, payload: unknown, userId?: 
   const state = await loadChatState(spindle, candidate.chatId, userId);
   const record = await loadTurnRecord(spindle, state.activeTurnPath, userId);
   if (!record || record.plan.key.assistantMessageId !== candidate.messageId) return;
+  bumpIntakeEpoch(userId, candidate.chatId);
   planningQueue.cancelChat(userId, candidate.chatId);
   assetControllers.get(runtimeKey(userId, candidate.chatId))?.abort("The source assistant message was deleted.");
   activeTurnKeys.delete(runtimeKey(userId, candidate.chatId));
@@ -1112,6 +1240,8 @@ function reconcileMessageEvent(spindle: SpindleAPI, payload: unknown, userId?: s
   if (!event || event.message.is_user) return;
   void (async () => {
     if (!(await allowAutomaticWork(spindle, userId, event.chatId, "message reconcile"))) return;
+    // A newer version of the message supersedes any intake still resolving.
+    bumpIntakeEpoch(userId, event.chatId);
     releaseSceneCacheAdmission(spindle, userId, event.chatId, "message_changed");
     await processAssistantMessage(spindle, event.chatId, event.message, event.message.content, userId);
   })().catch((error) => {
@@ -1135,6 +1265,7 @@ export function registerVisualNovelBackend(spindle: SpindleAPI): void {
     // current asset batch. The new turn's ownership is re-established when it is
     // actually planned (processAssistantMessage -> activeTurnKeys.set).
     const key = runtimeKey(userId, payload.chatId);
+    bumpIntakeEpoch(userId, payload.chatId);
     activeTurnKeys.delete(key);
     assetControllers.get(key)?.abort("A new generation started before this turn's assets settled.");
     releaseSceneCacheAdmission(spindle, userId, payload.chatId, "generation_started");

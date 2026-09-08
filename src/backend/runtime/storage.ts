@@ -339,6 +339,26 @@ export function characterRegistryPath(chatId: string): string {
   return `chats/${safeSegment(chatId)}/character-registry.json`;
 }
 
+/**
+ * Reset one chat's durable identity state (frozen protagonist visual state,
+ * character registry, per-chat appearance roster) to the empty pre-greeting
+ * baseline. Called only when a multi-scene greeting is replanned under a
+ * different scene selection while it is the chat's sole assistant turn: the
+ * discarded scene produced that state, and the predecessor state of such a
+ * chat is empty by definition. Global appearance memory is not touched.
+ */
+export async function resetChatIdentityState(spindle: SpindleAPI, chatId: string, userId?: string): Promise<void> {
+  const options = userOptions(userId);
+  const writes: Array<[string, unknown]> = [
+    [singleCharacterStatePath(chatId), null],
+    [characterRegistryPath(chatId), {}],
+    [chatRosterPath(chatId), {}]
+  ];
+  for (const [path, value] of writes) {
+    await serializedWrite(scopedKey(userId, path), () => spindle.userStorage.setJson(path, value, { ...(options ?? {}) }));
+  }
+}
+
 function chatRosterPath(chatId: string): string {
   return `chats/${safeSegment(chatId)}/characters.json`;
 }

@@ -21,6 +21,8 @@ export type FrontendRequest =
   | { type: "vn_asset_ready"; chatId: string; messageId: string; jobId: string; sourceFingerprint: string }
   | { type: "vn_cancel"; chatId: string }
   | { type: "vn_retry_turn"; chatId: string; messageId: string }
+  /** Re-check the chat's latest assistant message (macro selection may have changed). */
+  | { type: "vn_refresh"; chatId: string }
   | { type: "vn_scan_audio"; directory?: string }
   | {
       type: "vn_import_audio_file";
@@ -107,6 +109,12 @@ export type BackendResponse =
   | { type: "vn_turn"; turn: TurnView }
   | { type: "vn_asset"; chatId: string; messageId: string; asset: AssetView }
   | { type: "vn_planning"; chatId: string }
+  /**
+   * The latest assistant message has no narrative left after macro
+   * resolution (an unselected multi-scene greeting). Nothing was planned and
+   * no images were made; the user picks a scene in the chat first.
+   */
+  | { type: "vn_waiting"; chatId: string; messageId: string; reason: "greeting_unselected" }
   | { type: "vn_generation"; chatId: string; active: boolean; error?: string }
   | { type: "vn_permission"; permission: string; granted: boolean }
   | { type: "vn_audio_scanned"; bgmCount: number; sfxCount: number }

@@ -236,6 +236,7 @@ export type VnStageErrorSource =
   | "generation"
   | "permission"
   | "submit"
+  | "waiting"
   | "other";
 
 /**
@@ -270,6 +271,8 @@ const errorTitle = (source: VnStageErrorSource | undefined): string => {
       return "Permission needed";
     case "submit":
       return "Reply not sent";
+    case "waiting":
+      return "Waiting for a scene choice";
     default:
       return "Something went wrong";
   }
