@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import type { VisualNovelConfig } from "../../config.js";
+import { DEFAULT_CONFIG, type VisualNovelConfig } from "../../config.js";
 import {
   applyVisualConfigToStage,
   computeAssetProgress,
@@ -44,6 +44,7 @@ function spyStage(): VisualStageThemeTarget & { calls: string[] } {
 }
 
 const baseConfig: VisualNovelConfig = {
+  speech: DEFAULT_CONFIG.speech,
   themePreset: "lumiverse",
   enabled: true,
   autoEnter: false,

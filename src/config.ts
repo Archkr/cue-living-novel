@@ -1,3 +1,5 @@
+import { DEFAULT_SPEECH_SETTINGS, normalizeSpeechSettings, type SpeechSettings } from "./speech-config.js";
+
 export type VisualNovelMode = "standard" | "cyoa";
 
 export const SCENE_IMAGE_FITS = ["cover", "contain", "fill", "none", "scale-down"] as const;
@@ -102,6 +104,8 @@ export type VisualNovelConfig = {
   audioDirectory: string;
   bgmVolume: number;
   sfxVolume: number;
+  /** Default-off speech (TTS) settings. See src/speech-config.ts. */
+  speech: SpeechSettings;
 };
 
 export const DEFAULT_CONFIG: VisualNovelConfig = {
@@ -145,6 +149,7 @@ export const DEFAULT_CONFIG: VisualNovelConfig = {
   audioDirectory: "",
   bgmVolume: 0.7,
   sfxVolume: 0.8,
+  speech: DEFAULT_SPEECH_SETTINGS,
 };
 
 function record(value: unknown): Record<string, unknown> {
@@ -284,5 +289,6 @@ export function normalizeConfig(value: unknown): VisualNovelConfig {
     audioDirectory: stringValue(input.audioDirectory, DEFAULT_CONFIG.audioDirectory).trim(),
     bgmVolume: floatBetween(input.bgmVolume, 0, 1, DEFAULT_CONFIG.bgmVolume),
     sfxVolume: floatBetween(input.sfxVolume, 0, 1, DEFAULT_CONFIG.sfxVolume),
+    speech: normalizeSpeechSettings(input.speech),
   };
 }

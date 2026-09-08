@@ -17,6 +17,10 @@ import {
   describePlanningFailure,
   type HostStageError,
 } from "./turn-status.js";
+import { SpeechController, type SpeechCursor } from "../speech/controller.js";
+import { createSpeechTransport } from "../speech/transport.js";
+import { SpeechDock } from "../speech/ui.js";
+import { SpeechSettingsSection } from "../speech/settings-ui.js";
 
 const CLEANUP_KEY = Symbol.for("visual-novel-preview.frontend-cleanup");
 
@@ -157,6 +161,26 @@ export function shouldPreserveImage(previous: TurnView | null, next: TurnView): 
 export function nameplateForParagraph(view: TurnView, index: number): string {
   const attributed = view.paragraphSpeakers?.[index];
   return attributed === undefined || attributed === null ? view.speaker : attributed;
+}
+
+/**
+ * Speech cursor for one paragraph of a ready turn. Preserves the raw tri-state
+ * paragraph attribution ("" narrator / name / null-undefined unknown) so voice
+ * resolution can mirror the nameplate exactly. Returns null for missing
+ * paragraphs so planning/error states never produce a speakable cursor.
+ */
+export function speechCursorFor(view: TurnView, index: number): SpeechCursor | null {
+  const text = view.paragraphs[index];
+  if (typeof text !== "string") return null;
+  return {
+    chatId: view.chatId,
+    messageId: view.messageId,
+    sourceFingerprint: view.sourceFingerprint,
+    paragraphIndex: index,
+    text,
+    paragraphSpeaker: view.paragraphSpeakers?.[index],
+    turnSpeaker: view.speaker,
+  };
 }
 
 /**
@@ -386,6 +410,23 @@ export function setupVisualNovelFrontend(baseContext: SpindleFrontendContext): (
     sfxVolume: configRef.current?.sfxVolume ?? 0.8,
   });
 
+  // Speech (default-off TTS). Own player and lifecycle; never the SFX channel.
+  const speechDock = new SpeechDock({
+    mount: app.root,
+    onPlay: () => { void speech.playCurrent(); },
+    onPause: () => speech.pause(),
+    onStop: () => speech.stop("user-stop"),
+  });
+  const speech = new SpeechController({
+    transport: createSpeechTransport(),
+    onStatus: (status) => speechDock.setStatus(status),
+  });
+  const syncSpeechCursor = (view: TurnView | null, paragraphIndex: number): void => {
+    speech.setCursor(view && view.status === "ready" ? speechCursorFor(view, paragraphIndex) : null);
+  };
+  const onVisibilityChanged = (): void => speech.setVisible(!document.hidden);
+  document.addEventListener("visibilitychange", onVisibilityChanged);
+
   let currentBgm: string | null = null;
   let turnOpeningBgm: string | null = null;
   function syncAudioForParagraph(activeTurn: TurnView, paragraphIndex: number): void {
@@ -411,6 +452,7 @@ export function setupVisualNovelFrontend(baseContext: SpindleFrontendContext): (
     onExit: () => deactivate(),
     onPrevious: (paragraphIndex) => {
       panels.setCursor(paragraphIndex);
+      syncSpeechCursor(turn, paragraphIndex);
       audioEngine.stopAll();
       const earlierMusic = turn?.audioCues?.filter((cue) => cue.paragraphIndex <= paragraphIndex && (cue.bgmUrl || cue.bgm))
         .sort((a, b) => b.paragraphIndex - a.paragraphIndex)[0];
@@ -426,6 +468,7 @@ export function setupVisualNovelFrontend(baseContext: SpindleFrontendContext): (
         applyTurn(next, turn);
         return;
       }
+      syncSpeechCursor(turn, paragraphIndex);
       if (turn) syncAudioForParagraph(turn, paragraphIndex);
       void syncImageForParagraph(paragraphIndex);
     },
@@ -568,6 +611,19 @@ export function setupVisualNovelFrontend(baseContext: SpindleFrontendContext): (
       ctx.sendToBackend({ type: "vn_set_config", patch, chatId: chatId() });
     }
   }) : null;
+  // Speech settings live in their own card appended after the main panel, so
+  // the panel file itself stays untouched. Profile/voice listing happens only
+  // on explicit button presses inside the card (metadata calls, no synthesis).
+  const speechTransport = createSpeechTransport();
+  const speechSettings = settingsHandle ? new SpeechSettingsSection({
+    mount: settingsHandle.root,
+    onSave: (speechPatch) => {
+      ctx.sendToBackend({ type: "vn_set_config", patch: { speech: speechPatch }, chatId: chatId() });
+    },
+    listProfiles: () => speechTransport.listProfiles(new AbortController().signal),
+    listVoices: (connectionId) => speechTransport.listVoices(connectionId, new AbortController().signal),
+    getChatId: () => chatId(),
+  }) : null;
 
   function chatId(): string {
     return ctx.getActiveChat().chatId ?? "";
@@ -644,6 +700,8 @@ export function setupVisualNovelFrontend(baseContext: SpindleFrontendContext): (
       turn = null;
       stage.reset();
     }
+    speech.setActive(true);
+    speechDock.setOverlayActive(true);
     requestState();
     stage.focus();
   }
@@ -657,6 +715,9 @@ export function setupVisualNovelFrontend(baseContext: SpindleFrontendContext): (
     // repeats would be harmless (the backend close is idempotent).
     const activeChatId = chatId();
     if (wasActive && activeChatId) ctx.sendToBackend({ type: "vn_view", chatId: activeChatId, open: false });
+    // Closing the view stops speech, aborts any request, and clears the session cache.
+    speech.setActive(false);
+    speechDock.setOverlayActive(false);
     audioEngine.stopAll();
     destroyOverrides();
     app.setVisible(false);
@@ -677,6 +738,7 @@ export function setupVisualNovelFrontend(baseContext: SpindleFrontendContext): (
     const trimmed = content.trim();
     if (!trimmed) throw new Error("Enter a response first.");
     const userSpeaker = turn?.userSpeaker || "You";
+    speech.setCursor(null);
     stage.presentUserParagraph(trimmed, userSpeaker);
     await submit(trimmed);
   }
@@ -733,14 +795,19 @@ export function setupVisualNovelFrontend(baseContext: SpindleFrontendContext): (
     });
     if (decision.kind === "none") return;
     if (decision.kind === "planning") {
+      speech.setCursor(null);
       stage.setPhase("planning");
       return;
     }
     if (decision.kind === "error") {
+      speech.setCursor(null);
       reportStageError(describePlanningFailure(next));
       return;
     }
     if (decision.kind === "same-turn") {
+      // Identical cursor identity: SpeechController treats this as a no-op, so
+      // a same-turn rebroadcast (e.g. an image/asset update) never replays speech.
+      syncSpeechCursor(next, decision.paragraphIndex);
       panels.setTurn(next, decision.paragraphIndex);
       void syncImageForParagraph(decision.paragraphIndex);
       return;
@@ -751,6 +818,7 @@ export function setupVisualNovelFrontend(baseContext: SpindleFrontendContext): (
     const preserveImage = shouldPreserveImage(previous, next);
     turnOpeningBgm = preserveImage ? currentBgm : null;
     stage.loadTurn(stageTurnInput(next, mode, preserveImage, configRef.current?.effectIntensity ?? "full"));
+    syncSpeechCursor(next, 0);
     void syncImageForParagraph(0);
     syncAudioForParagraph(next, 0);
   }
@@ -785,12 +853,16 @@ export function setupVisualNovelFrontend(baseContext: SpindleFrontendContext): (
       applyVisualConfigToStage(stage, configRef.current);
       audioEngine.setBgmVolume(configRef.current.bgmVolume);
       audioEngine.setSfxVolume(configRef.current.sfxVolume);
+      speech.setSettings(configRef.current.speech);
+      speechDock.setEnabled(configRef.current.speech.enabled);
+      speechSettings?.setConfig(configRef.current.speech);
       settingsPanel?.setConfig(configRef.current);
       if (configRef.current?.autoEnter && !active) activate();
       if (message.turn && message.turn.chatId === chatId()) {
         applyTurn(message.turn, turn);
       } else {
         turn = null;
+        speech.setCursor(null);
         panels.setTurn(null);
         stage.reset();
         if (active) stage.setPhase("idle");
@@ -804,6 +876,9 @@ export function setupVisualNovelFrontend(baseContext: SpindleFrontendContext): (
       applyVisualConfigToStage(stage, configRef.current);
       audioEngine.setBgmVolume(configRef.current.bgmVolume);
       audioEngine.setSfxVolume(configRef.current.sfxVolume);
+      speech.setSettings(configRef.current.speech);
+      speechDock.setEnabled(configRef.current.speech.enabled);
+      speechSettings?.setConfig(configRef.current.speech);
       settingsPanel?.setConfig(configRef.current);
       settingsPanel?.setSaveStatus?.({ kind: "saved" });
       return;
@@ -904,6 +979,7 @@ export function setupVisualNovelFrontend(baseContext: SpindleFrontendContext): (
     panels.setTurn(null);
     turn = null;
     pendingNextTurn = null;
+    speech.onChatChanged();
     stage.reset();
     requestState();
   });
@@ -912,6 +988,7 @@ export function setupVisualNovelFrontend(baseContext: SpindleFrontendContext): (
     panels.setTurn(null);
     turn = null;
     pendingNextTurn = null;
+    speech.onChatChanged();
     stage.reset();
     requestState();
   });
@@ -936,6 +1013,10 @@ export function setupVisualNovelFrontend(baseContext: SpindleFrontendContext): (
     unsubPermission();
     headerLauncher.destroy();
     action.destroy();
+    document.removeEventListener("visibilitychange", onVisibilityChanged);
+    speech.dispose();
+    speechDock.destroy();
+    speechSettings?.destroy();
     settingsPanel?.destroy();
     settingsHandle?.destroy();
     audioEngine.destroy();

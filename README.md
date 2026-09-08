@@ -186,4 +186,6 @@ bun run build
 bun run build:demo
 ```
 
+See [SPEECH.md](./SPEECH.md) for the default-off paragraph speech (TTS) feature, its contracts, and its truthful limitations.
+
 See [ARCHITECTURE.md](./ARCHITECTURE.md) for the viability decision, staging host contract, image pipeline, deterministic single-character identity, data ownership, state machines, and remaining preview limits.
