@@ -35,15 +35,60 @@ function keepToken(token: string): boolean {
  * extensions, so the selection fingerprint masks these tokens before the
  * dry resolve; the planning text still resolves them for real.
  */
-export const VOLATILE_MACROS: ReadonlySet<string> = new Set([
-  "randomtag", "random_tag", "randomchartag",
-  "time", "date", "weekday", "isotime", "isodate", "datetimeformat",
+/**
+ * Host macros whose evaluation is purely a function of their arguments,
+ * with no environment reads, state mutations, or external context.
+ * Verified against Lumiverse macro handlers:
+ * - random/pick/roll: Math.random() (no env reads)
+ * - time/date/weekday/isotime/isodate/datetimeformat: new Date() (no env reads)
+ *
+ * Excluded by policy: idleDuration, timeDiff, chatAge (depend on chat timing),
+ * randomTag, randomLumia (depend on character/card context), shuffle, and all
+ * stateful/counter macros.
+ */
+export const PURE_VOLATILE: ReadonlySet<string> = new Set([
+  "random", "pick", "roll",
+  "time", "date", "weekday", "isotime", "isodate", "datetimeformat"
+]);
+
+/**
+ * Pure string transformation macros that only operate on their arguments.
+ * Verified against Lumiverse macro handlers (String category pure ops).
+ */
+export const PURE_TRANSFORMS: ReadonlySet<string> = new Set([
+  "upper", "uppercase", "toupper",
+  "lower", "lowercase", "tolower",
+  "capitalize", "titlecase",
+  "trim", "reverse"
+]);
+
+/**
+ * Stateful or environment-mutating macros in Lumiverse that must execute
+ * in their natural whole-message order within a single host environment.
+ * Messages containing any of these bypass masking entirely.
+ */
+export const STATEFUL_MACROS: ReadonlySet<string> = new Set([
+  "counter", "toggle", "rcounter",
+  "setvar", "addvar", "incvar", "decvar", "deletevar", "flushvar",
+  "let", "withvar", "scope",
+  "setgvar", "addgvar", "incgvar", "decgvar", "deletegvar", "flushgvar", "flushglobalvar", "deleteglobalvar",
+  "setchatvar", "addchatvar", "incchatvar", "decchatvar", "deletechatvar", "flushchatvar"
+]);
+
+/**
+ * All known volatile macros in the Lumiverse registry. If any of these remain
+ * unmasked in a template (e.g. inside a condition or stateful block), the
+ * selection is marked unstable.
+ */
+export const ALL_VOLATILE_MACROS: ReadonlySet<string> = new Set([
+  ...PURE_VOLATILE,
   "idleduration", "idle_duration", "timediff", "time_diff",
-  "random", "pick", "roll", "randomlumia", "chatage", "chat_age",
-  "counter", "toggle", "rcounter", "shuffle",
+  "chatage", "chat_age", "randomtag", "random_tag", "randomchartag",
+  "randomlumia", "shuffle",
+  "counter", "toggle", "rcounter",
   "foreachvar", "for_each_var", "foreachchatvar", "for_each_chat_var",
   "foreachglobalvar", "foreachgvar", "for_each_global_var"
-].map((name) => name.toLowerCase()));
+]);
 
 /**
  * Mask delimiter: U+2062 INVISIBLE TIMES (format char, not whitespace, never
@@ -51,27 +96,52 @@ export const VOLATILE_MACROS: ReadonlySet<string> = new Set([
  * first so a placeholder can never collide with user content.
  */
 const MASK = "\u2062";
-const MASK_PATTERN = /\u2062(\d+)\u2062/g;
 
-/** Macro name of a `{{...}}` token: the first segment before `::`, `:`, whitespace or `}}`. */
-function macroName(token: string): string {
-  const inner = token.slice(2, -2).trim();
-  const match = /^([A-Za-z_][\w-]*)/.exec(inner);
-  return match ? match[1]!.toLowerCase() : "";
+function extractMacroNames(text: string): string[] {
+  const names: string[] = [];
+  for (const match of text.matchAll(/\{\{\s*([#^/]?[A-Za-z_][\w-]*)/g)) {
+    names.push(match[1]!.toLowerCase());
+  }
+  return names;
 }
 
-export type MaskedTemplate = { template: string; tokens: string[] };
+/** True when a depth-0 macro token is an output-position pure transform subtree containing volatile macros. */
+function isSafePureSubtree(token: string): boolean {
+  if (/^\{\{\s*[#^/]/.test(token)) return false;
+  const names = extractMacroNames(token);
+  if (names.length === 0) return false;
+  let hasPureVolatile = false;
+  for (const name of names) {
+    if (PURE_VOLATILE.has(name)) hasPureVolatile = true;
+    else if (!PURE_TRANSFORMS.has(name)) return false;
+  }
+  return hasPureVolatile;
+}
+
+/** True when the text contains any stateful/mutating macro that requires single-environment execution. */
+export function hasStatefulMacros(text: string): boolean {
+  const names = extractMacroNames(text);
+  return names.some((name) => STATEFUL_MACROS.has(name));
+}
+
+export type MaskedTemplate = {
+  template: string;
+  tokens: string[];
+  stableSelection: boolean;
+};
 
 /**
- * Replace every depth-0 volatile token with an indexed placeholder
- * (`\u2062N\u2062`) and return the tokens in order. Tokens nested inside
- * another token (a `{{#when::{{random::..}}}}` header) are left alone: they
- * drive the selection itself and must reach the host in the ONE call that
- * chooses the branch. `tokens` is empty when nothing was masked.
+ * Replace every safe output-position pure volatile subtree with an indexed
+ * placeholder (`\u2062N\u2062`). Messages with stateful macros bypass masking
+ * entirely (single full-raw resolve). Tokens driving control structures or
+ * containing unverified context remain unmasked in the template.
  */
 export function maskVolatileMacros(text: string): MaskedTemplate {
+  if (hasStatefulMacros(text)) {
+    return { template: text, tokens: [], stableSelection: false };
+  }
   const source = text.includes(MASK) ? text.split(MASK).join("") : text;
-  if (!source.includes("{{")) return { template: source, tokens: [] };
+  if (!source.includes("{{")) return { template: source, tokens: [], stableSelection: true };
   const tokens: string[] = [];
   let output = "";
   let cursor = 0;
@@ -82,7 +152,7 @@ export function maskVolatileMacros(text: string): MaskedTemplate {
     if (end < 0) break;
     const token = source.slice(start, end);
     output += source.slice(cursor, start);
-    if (VOLATILE_MACROS.has(macroName(token))) {
+    if (isSafePureSubtree(token)) {
       output += `${MASK}${tokens.length}${MASK}`;
       tokens.push(token);
     } else {
@@ -90,18 +160,15 @@ export function maskVolatileMacros(text: string): MaskedTemplate {
     }
     cursor = end;
   }
-  if (tokens.length === 0) return { template: source, tokens: [] };
-  return { template: output + source.slice(cursor), tokens };
-}
-
-/** Selection form of a masked resolution: every placeholder collapses to one stable mark. */
-function collapseMasks(text: string): string {
-  return text.replace(MASK_PATTERN, MASK);
+  const template = output + source.slice(cursor);
+  const remainingNames = extractMacroNames(template);
+  const unmaskedVolatile = remainingNames.some((name) => ALL_VOLATILE_MACROS.has(name));
+  return { template, tokens, stableSelection: !unmaskedVolatile };
 }
 
 /** Planning form: each surviving placeholder is replaced by its resolved token value. */
 function fillMasks(text: string, values: readonly string[]): string {
-  return text.replace(MASK_PATTERN, (_match, index: string) => values[Number(index)] ?? "");
+  return text.replace(/\u2062(\d+)\u2062/g, (_match, index: string) => values[Number(index)] ?? "");
 }
 
 /** True when the text contains macro syntax the host may be able to resolve. */
@@ -301,7 +368,12 @@ export async function resolveMessageText(
  *   message must then be kept instead of replanned or replaced by a waiting
  *   state.
  */
-export type MessageIntake = { text: string; selectionText: string; resolved: boolean };
+export type MessageIntake = {
+  text: string;
+  selectionText: string;
+  resolved: boolean;
+  stableSelection: boolean;
+};
 
 async function hostResolve(spindle: SpindleAPI, chatId: string, template: string, userId?: string): Promise<string | null> {
   if (typeof spindle.macros?.resolve !== "function") return null;
@@ -319,16 +391,12 @@ export async function resolveMessageIntake(
   content: string,
   userId?: string
 ): Promise<MessageIntake> {
-  if (!needsResolution(content)) return { text: content, selectionText: content, resolved: true };
+  if (!needsResolution(content)) return { text: content, selectionText: content, resolved: true, stableSelection: true };
   if (!hasMacroSyntax(content)) {
     // Placeholder line only: nothing for the host to do.
     const cleaned = cleanResolvedText(content);
-    return { text: cleaned, selectionText: cleaned, resolved: true };
+    return { text: cleaned, selectionText: cleaned, resolved: true, stableSelection: true };
   }
-  // Volatile tokens are masked BEFORE the host sees the template, so the
-  // branch selection happens in exactly one host call and the planning text
-  // and the selection text always describe the same scene. The masked
-  // tokens are then resolved on their own to fill the planning text in.
   const masked = maskVolatileMacros(content);
   const hostText = await hostResolve(spindle, chatId, masked.template, userId);
   // A resolve that leaves block syntax behind did not evaluate the card's
@@ -337,19 +405,21 @@ export async function resolveMessageIntake(
   const base = hostText ?? masked.template;
   if (masked.tokens.length === 0) {
     const text = cleanResolvedText(base);
-    return { text, selectionText: text, resolved };
+    return { text, selectionText: text, resolved, stableSelection: masked.stableSelection };
   }
   const values = await Promise.all(masked.tokens.map(async (token, index) => {
-    // Only tokens that survived (sit in the selected branch) need a value.
+    // Only tokens that survived in the chosen branch need evaluation.
     if (!base.includes(`${MASK}${index}${MASK}`)) return "";
     const value = resolved ? await hostResolve(spindle, chatId, token, userId) : null;
-    // An unresolvable volatile token is dropped like any other leftover macro.
     return value !== null && !value.includes("{{") ? value : "";
   }));
   return {
     text: cleanResolvedText(fillMasks(base, values)),
-    selectionText: cleanResolvedText(collapseMasks(base)),
-    resolved
+    // selectionText retains indexed placeholders (\u20620\u2062, \u20621\u2062):
+    // distinct tokens across alternative branches produce distinct fingerprints.
+    selectionText: cleanResolvedText(base),
+    resolved,
+    stableSelection: masked.stableSelection
   };
 }
 

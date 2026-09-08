@@ -489,7 +489,7 @@ type RecordRelation = "current" | "reselected" | "changed";
 function relateRecord(
   record: StoredTurnRecord | null,
   message: Pick<NormalizedChatMessage, "id" | "swipe_id" | "content">,
-  intake: Pick<MessageIntake, "selectionText">
+  intake: Pick<MessageIntake, "selectionText" | "stableSelection">
 ): RecordRelation {
   if (!record) return "changed";
   const key = record.plan.key;
@@ -497,8 +497,15 @@ function relateRecord(
   const selection = fingerprintForMessage({ id: message.id, swipe_id: message.swipe_id, content: intake.selectionText });
   const rawFingerprint = fingerprintForMessage({ id: message.id, swipe_id: message.swipe_id, content: message.content });
   if (record.source?.version === 2) {
+    // 1. Raw text changed -> plain edit (replan, preserve continuity).
+    if (record.source.rawFingerprint !== rawFingerprint) return "changed";
+    // 2. Raw text identical, selection identical -> current.
     if (key.sourceFingerprint === selection) return "current";
-    return record.source.rawFingerprint === rawFingerprint ? "reselected" : "changed";
+    // 3. Raw text identical, selection differs:
+    //    Only a stable selection change is a genuine re-selection that resets identity.
+    //    An unstable selection (volatile condition or stateful macro re-rolled)
+    //    replans without reset so the new branch is shown with identity preserved.
+    return intake.stableSelection ? "reselected" : "changed";
   }
   // Legacy records: fingerprinted on raw text (pre-macro intake) or on the
   // fully resolved text (volatile output included). Either exact match means
@@ -569,8 +576,8 @@ export async function sendState(
           } else if (relation !== "current") {
             stale = { message: latest, intake, relation };
           }
-        } else if (relateRecord(record, latest, { selectionText: latest.content }) !== "current") {
-          stale = { message: latest, intake: { text: latest.content, selectionText: latest.content, resolved: true }, relation: "changed" };
+        } else if (relateRecord(record, latest, { selectionText: latest.content, stableSelection: true }) !== "current") {
+          stale = { message: latest, intake: { text: latest.content, selectionText: latest.content, resolved: true, stableSelection: true }, relation: "changed" };
         }
       }
     } catch (error) {

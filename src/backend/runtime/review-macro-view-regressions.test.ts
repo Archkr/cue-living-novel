@@ -144,7 +144,7 @@ describe("maskVolatileMacros / resolveMessageIntake (dual resolution contract)",
     expect(masked.template).not.toContain("{{roll");
     expect(masked.template).not.toContain("{{TIME}}");
     expect(masked.tokens).toEqual(["{{roll::1d6}}", "{{TIME}}"]);
-    expect(maskVolatileMacros("plain {{char}} text")).toEqual({ template: "plain {{char}} text", tokens: [] });
+    expect(maskVolatileMacros("plain {{char}} text")).toEqual({ template: "plain {{char}} text", tokens: [], stableSelection: true });
   });
 
   test("planning text carries the real values, selection text is stable, no mask char is ever visible", async () => {
@@ -192,7 +192,7 @@ describe("maskVolatileMacros / resolveMessageIntake (dual resolution contract)",
     const rt = runtime([], { resolveText: cbs({ firstMessage: "s1" }, () => 0.99) });
     const intake = await resolveMessageIntake(rt.spindle, "c1", card, "u1");
     expect(intake.text).toBe("The silver hall.\n\n<pimg=\"aurelia\">");
-    expect(intake.selectionText).toBe("The \u2062 hall.\n\n<pimg=\"aurelia\">");
+    expect(intake.selectionText).toBe("The \u20620\u2062 hall.\n\n<pimg=\"aurelia\">");
     expect(intake.text).not.toContain("frozen");
     expect(intake.resolved).toBe(true);
   });
@@ -201,14 +201,14 @@ describe("maskVolatileMacros / resolveMessageIntake (dual resolution contract)",
     const rt = runtime([], { resolveText: (template) => template.replace(/\{\{roll::1d6\}\}/g, "4") });
     const intake = await resolveMessageIntake(rt.spindle, "c1", "Rolled \u20620\u2062 then {{roll::1d6}} {{char}}", "u1");
     expect(intake.text).toBe("Rolled 0 then 4 {{char}}");
-    expect(intake.selectionText).toBe("Rolled 0 then \u2062 {{char}}");
+    expect(intake.selectionText).toBe("Rolled 0 then \u20620\u2062 {{char}}");
   });
 
   test("without a macros API the volatile token is dropped, display macros are kept, resolved is false", async () => {
     const rt = runtime([], { noMacrosApi: true });
     const intake = await resolveMessageIntake(rt.spindle, "c1", "{{char}} arrives at {{time}}.", "u1");
     expect(intake.text).toBe("{{char}} arrives at .");
-    expect(intake.selectionText).toBe("{{char}} arrives at \u2062.");
+    expect(intake.selectionText).toBe("{{char}} arrives at \u20620\u2062.");
     expect(intake.resolved).toBe(false);
     expect(rt.macroCalls()).toBe(0);
   });
@@ -471,5 +471,110 @@ describe("resolvedSourceText handoff", () => {
     expect(rt.record()!.resolvedSourceText).toBe(cleanResolvedText(S1_SCENE_TEXT));
     rt.frontend({ type: "vn_retry_turn", chatId: "c1", messageId: "g1" }); await settle(120);
     expect(rt.record()!.resolvedSourceText).toBe(cleanResolvedText(S1_SCENE_TEXT));
+  });
+});
+
+describe("stateful macros and pure-subtree boundaries (cross-review blockers)", () => {
+  test("blocker 1: ordered counters retain one evaluation context (no separate RPCs)", async () => {
+    const spindle = {
+      macros: {
+        resolve: async (template: string) => {
+          const vars = new Map<string, number>();
+          return {
+            text: template.replace(/\{\{counter::(\w+)\}\}/g, (_m, key) => {
+              const next = (vars.get(key) ?? 0) + 1;
+              vars.set(key, next);
+              return String(next);
+            }),
+            diagnostics: []
+          };
+        }
+      }
+    } as unknown as SpindleAPI;
+    const raw = "{{counter::n}} and {{counter::n}}";
+    expect((await spindle.macros.resolve(raw)).text).toBe("1 and 2");
+    const intake = await resolveMessageIntake(spindle, "c1", raw);
+    expect(intake.text).toBe("1 and 2");
+    expect(intake.stableSelection).toBe(false);
+  });
+
+  test("blocker 1 extension: stateful ordering across setvar and counter in one message", async () => {
+    const spindle = {
+      macros: {
+        resolve: async (template: string) => {
+          const vars = new Map<string, string>();
+          const counters = new Map<string, number>();
+          let text = template.replace(/\{\{setvar::(\w+)::([^}]+)\}\}/g, (_m, k, v) => {
+            vars.set(k, v);
+            return "";
+          });
+          text = text.replace(/\{\{counter::(\w+)\}\}/g, (_m, k) => {
+            const next = (counters.get(k) ?? 0) + 1;
+            counters.set(k, next);
+            return String(next);
+          });
+          text = text.replace(/\{\{getvar::(\w+)\}\}/g, (_m, k) => vars.get(k) ?? "");
+          return { text, diagnostics: [] };
+        }
+      }
+    } as unknown as SpindleAPI;
+    const raw = "{{setvar::seed::10}}{{counter::n}} seed={{getvar::seed}} {{counter::n}}";
+    const intake = await resolveMessageIntake(spindle, "c1", raw);
+    expect(intake.text).toBe("1 seed=10 2");
+    expect(intake.stableSelection).toBe(false);
+  });
+
+  test("blocker 2: editing volatile choices changes the accepted source (raw edit classifies as changed)", async () => {
+    const messages: Msg[] = [{ id: "m1", content: "{{random::Dawn::Dusk}} light fills the chamber.", is_user: false, name: "Aurelia" }];
+    const r = runtime(messages, { resolveText: (t) => t.replace(/\{\{random::([^}:]+)::[^}]+\}\}/g, "$1") });
+    openView(r); await settle();
+    expect(r.record()?.resolvedSourceText).toContain("Dawn");
+    messages[0]!.content = "{{random::Snow::Rain}} light fills the chamber.";
+    r.frontend({ type: "vn_get_state", chatId: "c1", viewOpen: true }); await settle();
+    expect(r.record()?.resolvedSourceText).toContain("Snow");
+    expect(r.plannerCalls()).toBe(2);
+    expect(identityResets(r).length).toBe(0);
+  });
+
+  test("blocker 3: selector change between volatile-only variants is not collapsed (indexed placeholders)", async () => {
+    const vars = { scene: "1" };
+    const raw = "{{#when::{{equal::{{getvar::scene}}::1}}}}{{random::Dawn::Sunrise}} light fills the chamber.{{/when}}{{#when::{{equal::{{getvar::scene}}::2}}}}{{random::Snow::Rain}} light fills the chamber.{{/when}}";
+    const r = runtime([{ id: "m1", content: raw, is_user: false, name: "Aurelia" }], { resolveText: cbs(vars, () => 0) });
+    openView(r); await settle();
+    expect(r.record()?.resolvedSourceText).toContain("Dawn");
+    vars.scene = "2";
+    r.frontend({ type: "vn_get_state", chatId: "c1", viewOpen: true }); await settle();
+    expect(r.record()?.resolvedSourceText).toContain("Snow");
+    expect(r.plannerCalls()).toBe(2);
+  });
+
+  test("blocker 4: nested volatile inside pure transform does not replan on each reopen", async () => {
+    let flip = 0;
+    const r = runtime([{ id: "m1", content: "{{upper::{{random::Dawn::Dusk}}}} light fills the chamber.", is_user: false, name: "Aurelia" }], {
+      resolveText: (t) => t.replace(/\{\{upper::\{\{random::[^}]*\}\}\}\}/g, () => (flip++ % 2 ? "DUSK" : "DAWN"))
+    });
+    openView(r); await settle();
+    expect(r.record()?.resolvedSourceText).toMatch(/^(DAWN|DUSK) light/);
+    r.frontend({ type: "vn_get_state", chatId: "c1", viewOpen: true }); await settle();
+    expect(r.plannerCalls()).toBe(1);
+  });
+
+  test("volatile macro in condition/setvar remains unmasked and re-evaluates without identity reset", async () => {
+    const sequence = [0.1, 0.9];
+    let seqIdx = 0;
+    const card = "{{#when::{{equal::{{random::1::2}}::1}}}}\nScene one.\n{{/when}}\n{{#when::{{equal::{{random::1::2}}::2}}}}\nScene two.\n{{/when}}";
+    const r = runtime([{ id: "g1", content: card, is_user: false, name: "Aurelia" }], {
+      resolveText: cbs({}, () => sequence[seqIdx++ % sequence.length]!)
+    });
+    openView(r); await settle();
+    expect(r.plannerCalls()).toBe(1);
+    expect(r.record()?.plan.paragraphs[0]!.text).toBe("Scene one.");
+    r.writes.length = 0;
+    // Reopen when the volatile condition rolls a different branch:
+    openView(r); await settle();
+    expect(r.plannerCalls()).toBe(2);
+    expect(r.record()?.plan.paragraphs[0]!.text).toBe("Scene two.");
+    // Stable selection was false, so identity state is NOT reset despite being a single-turn greeting!
+    expect(identityResets(r).length).toBe(0);
   });
 });
