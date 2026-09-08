@@ -67,6 +67,10 @@ export type SceneImageIdentity = {
     referenceAnchoring: boolean;
     /** Set only when anchoring uses card sprites; absent for the default captured source. */
     referenceSource?: "card";
+    reference?:
+      | { source: "card"; imageId: string; assetName?: string }
+      | { source: "captured"; imageId?: string }
+      | { source: "none" };
   };
 };
 

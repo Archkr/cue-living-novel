@@ -381,6 +381,8 @@ export function defaultSceneImageVerifier(spindle: SpindleAPI, userId?: string):
 }
 
 export type SceneCacheOptions = {
+  /** Exact content used to plan this turn; omitted for legacy records. */
+  resolvedSourceText?: string;
   sceneCache?: SceneImageCache | null;
   /** Token minted when the batch was admitted; defaults to a token minted at call time. */
   admission?: SceneImageAdmission;
@@ -426,7 +428,7 @@ export async function resolveCacheCues(
   existingJobs: readonly AssetJob[],
   cache: SceneImageCache,
   userId?: string,
-  options: { provider?: string | null; verifyImage?: SceneImageVerifier; log?: (line: string) => void } = {}
+  options: { resolvedSourceText?: string; provider?: string | null; verifyImage?: SceneImageVerifier; log?: (line: string) => void } = {}
 ): Promise<AssetJob[]> {
   const candidates = plan.cacheCues ?? [];
   if (candidates.length === 0) return [];
@@ -447,7 +449,7 @@ export async function resolveCacheCues(
     try {
       const [loaded, ctx] = await Promise.all([
         loadPortraits(spindle, plan.key.chatId, userId).catch(() => ({} as Record<string, StoredPortrait>)),
-        loadCardReferenceContext(spindle, plan, userId).catch(() => null)
+        loadCardReferenceContext(spindle, plan, userId, options).catch(() => null)
       ]);
       candidatePortraits = loaded;
       candidateResolutions = ctx?.resolutions ?? null;
@@ -718,7 +720,7 @@ export async function generateAssets(
   // at most once per chat (the stored portrait is the lock). Any failure in
   // here degrades to the captured path and never blocks the batch.
   const cardContext: CardReferenceContext | null = cardSource
-    ? await loadCardReferenceContext(spindle, plan, userId).catch(() => null)
+    ? await loadCardReferenceContext(spindle, plan, userId, cacheOptions).catch(() => null)
     : null;
   const cardFetchPromises = new Map<string, Promise<StoredPortrait | null>>();
   // Test escape hatch mirroring `referenceStrength`: not a provider parameter.
@@ -737,7 +739,8 @@ export async function generateAssets(
         ...(cardFetchTimeoutMs !== undefined ? { timeoutMs: cardFetchTimeoutMs } : {}),
         signal
       });
-      // Never persist after close/abort: a reply that raced cancellation is dropped.
+      // Drop replies after cancellation. Once a storage write has started,
+      // cancellation cannot undo that write; the provider boundary checks again.
       if (signal.aborted) return null;
       const parsed = parseDataUrl(dataUrl ?? undefined);
       if (!parsed || Math.floor(parsed.data.length * 3 / 4) > REFERENCE_IMAGE_MAX_BYTES) {
@@ -814,7 +817,7 @@ export async function generateAssets(
     if (!cache || !plan.cacheCues?.length) return Promise.resolve();
     resolvingCandidates = resolvingCandidates.then(async () => {
       if (!stillAdmitted()) return;
-      const extra = await resolveCacheCues(spindle, plan, config, characterAppearance, jobs, cache, userId, { provider, verifyImage: verify, log: cacheLog });
+      const extra = await resolveCacheCues(spindle, plan, config, characterAppearance, jobs, cache, userId, { ...cacheOptions, provider, verifyImage: verify, log: cacheLog });
       if (!stillAdmitted()) return;
       for (const job of extra) {
         if (jobs.some((existing) => existing.jobId === job.jobId)) continue;
@@ -977,6 +980,10 @@ export async function generateAssets(
             ...parameters,
             ...(workflowId ? { workflow_id: workflowId } : {})
           };
+          // Relay/capture waits and storage operations can outlive cancellation.
+          // Never start paid work after either the batch or job was cancelled.
+          if (signal.aborted) throw abortError(signal);
+          if (jobSignal.aborted) throw abortError(jobSignal);
           const generationStarted = Date.now();
           const result = await spindle.imageGen.generate({
             ...(connectionId ? { connection_id: connectionId } : {}),

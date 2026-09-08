@@ -517,10 +517,13 @@ describe("relayReferenceFetch (card reference data relay)", () => {
     expect(replies).toEqual([{ type: "vn_reference_image", requestId: "r1", dataUrl: "data:image/webp;base64,QUJD" }]);
   });
 
-  test("a non-image MIME falls back to image/png in the data URL", async () => {
-    const replies: Reply[] = [];
-    await relayReferenceFetch({ requestId: "r1", imageId: "a" }, async () => fakeResponse({ type: "" }), (reply) => replies.push(reply));
-    expect(replies[0]?.dataUrl).toBe("data:image/png;base64,QUJD");
+  test("non-image or missing MIME is rejected instead of relabeled", async () => {
+    for (const type of ["", "video/webm", "application/json", "text/html", "application/octet-stream", "image/svg+xml"]) {
+      const replies: Reply[] = [];
+      await relayReferenceFetch({ requestId: "r1", imageId: "a" }, async () => fakeResponse({ type }), (reply) => replies.push(reply));
+      expect(replies[0]?.dataUrl).toBeUndefined();
+      expect(replies[0]?.error).toBeDefined();
+    }
   });
 
   test("an HTTP failure and an oversize blob reply with an error, never with data", async () => {
