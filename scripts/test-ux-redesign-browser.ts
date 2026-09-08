@@ -134,9 +134,9 @@ try {
   await page.locator('[data-section="images"] > summary').click();
 
   // Test Image Source switching
-  const cardRadio = page.locator('[data-section="images"] input[value="card"]');
-  const generatedRadio = page.locator('[data-section="images"] input[value="generated"]');
-  const textRadio = page.locator('[data-section="images"] input[value="text"]');
+  const cardRadio = page.locator('[data-section="images"] input[name="imageSource"][value="card"]');
+  const generatedRadio = page.locator('[data-section="images"] input[name="imageSource"][value="generated"]');
+  const textRadio = page.locator('[data-section="images"] input[name="imageSource"][value="text"]');
 
   assert.equal(await generatedRadio.isChecked(), true, "Default image source is generated");
 
