@@ -50,6 +50,7 @@ export type Config = {
   customParserInstructions: string;
   originalReference: boolean;
   originalCreationName: string;
+  originalReferenceFormat?: "parenthetical" | "tags";
   supplement: boolean;
   ignoredTags: string;
   customPositivePrefix: string;

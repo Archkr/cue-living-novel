@@ -6,6 +6,10 @@ Cue is a Lumiverse extension that turns a chat into a living visual novel. It re
 
 The preview includes:
 
+NovelAI profiles automatically use model-aware prompt formatting. V4+ receives separate scene and character captions and numerical emphasis; V3 keeps a combined prompt with bracket emphasis. The saved profile model is used unless Cue overrides it. Negative numerical emphasis requires V4.5 or newer.
+
+Under Advanced, NovelAI has toggles for model-specific quality tags and default negative tags. Custom positive prefixes and edited or empty negatives are preserved. Automatic quality tags are written into the request so they can be inspected; V4.5 Curated includes `rating:general` and reduced feet emphasis. These options do not affect other providers. The Lumiverse NovelAI adapter must also include the accompanying change that honors `qualityToggle: false` and empty negatives.
+
 - paragraph-by-paragraph reveal with a final acknowledgement gate
 - Previous button and Left Arrow to reread earlier paragraphs in the current reply. Going back pauses Auto and Skip, keeps your response draft, and does not rewind the chat. Skip still uses your selected mode.
 - Standard typed-response and CYOA choice modes

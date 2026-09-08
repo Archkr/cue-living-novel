@@ -89,6 +89,8 @@ export type VisualNovelConfig = {
   originalReference: boolean;
   /** Creation/source name (e.g. "doki doki literature club") */
   originalCreationName: string;
+  novelAiQualityTags: boolean;
+  novelAiUseDefaultNegative: boolean;
   customPlannerInstructions: string;
   customCss: string;
   ignoredTags: string;
@@ -136,6 +138,8 @@ export const DEFAULT_CONFIG: VisualNovelConfig = {
   promptPresets: [],
   originalReference: false,
   originalCreationName: "",
+  novelAiQualityTags: true,
+  novelAiUseDefaultNegative: true,
   customPlannerInstructions: "",
   customCss: "",
   ignoredTags: "",
@@ -276,6 +280,8 @@ export function normalizeConfig(value: unknown): VisualNovelConfig {
     promptPresets: promptPresetList(input.promptPresets),
     originalReference: bool(input.originalReference, DEFAULT_CONFIG.originalReference),
     originalCreationName: stringValue(input.originalCreationName, DEFAULT_CONFIG.originalCreationName).trim(),
+    novelAiQualityTags: bool(input.novelAiQualityTags, DEFAULT_CONFIG.novelAiQualityTags),
+    novelAiUseDefaultNegative: bool(input.novelAiUseDefaultNegative, DEFAULT_CONFIG.novelAiUseDefaultNegative),
     customPlannerInstructions: stringValue(input.customPlannerInstructions, DEFAULT_CONFIG.customPlannerInstructions),
     customCss: stringValue(input.customCss, DEFAULT_CONFIG.customCss),
     ignoredTags: stringValue(input.ignoredTags, DEFAULT_CONFIG.ignoredTags),

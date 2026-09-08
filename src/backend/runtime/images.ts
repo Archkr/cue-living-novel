@@ -1,5 +1,7 @@
 import type { SpindleAPI } from "lumiverse-spindle-types";
 import type { VisualNovelConfig } from "../../config.js";
+import { DEFAULT_CONFIG } from "../../config.js";
+import { novelAiCapabilities, novelAiQualityTags, NOVELAI_NEGATIVE_DEFAULT, renderNovelAiEmphasis } from "./novelai-prompt.js";
 import { AssetJobSchema, type AssetJob, type SceneState, type TurnPlan, type VisualCue } from "../../shared/contracts.js";
 import { AssetScheduler } from "../core/asset-scheduler.js";
 import {
@@ -188,7 +190,8 @@ export function describeCue(
   config: VisualNovelConfig,
   scene: SceneState,
   cue: VisualCue,
-  characterAppearance?: CharacterAppearanceMap
+  characterAppearance?: CharacterAppearanceMap,
+  provider?: string | null
 ): CueDescription {
   const promptSyntax = (config as any).promptSyntax ?? "comfyui";
   const compilerConfig = normalizeConfig({
@@ -201,7 +204,8 @@ export function describeCue(
     maxCharacters: 1,
     perspectiveMode: "dynamic",
     originalReference: config.originalReference,
-    originalCreationName: config.originalCreationName
+    originalCreationName: config.originalCreationName,
+    originalReferenceFormat: provider?.trim().toLowerCase() === "novelai" ? "tags" : "parenthetical"
   });
   const visualState = resolveCueCharacterVisualState(scene, cue, characterAppearance);
   const identity = visualState.identity;
@@ -266,11 +270,35 @@ export function compileImagePrompt(
   scene: SceneState,
   cue: VisualCue,
   characterAppearance?: CharacterAppearanceMap,
-  syntax?: Config["promptSyntax"]
+  syntax?: Config["promptSyntax"],
+  provider?: string | null
 ): string {
+  if (provider === "novelai") return compileNovelAiRequest(config, scene, cue, characterAppearance).prompt;
   const selectedSyntax = syntax ?? (config as any).promptSyntax ?? "comfyui";
-  const entry = compilePromptEntry(config, scene, cue, characterAppearance);
+  const entry = describeCue(config, scene, cue, characterAppearance, provider ?? (selectedSyntax === "nai" ? "novelai" : null)).entry;
   return renderPrompt(entry.prompt, selectedSyntax);
+}
+
+/** One compiled payload is shared by generation and cache identity. */
+export function compileNovelAiRequest(config: VisualNovelConfig, scene: SceneState, cue: VisualCue, appearances?: CharacterAppearanceMap) {
+  const model = config.imageModel;
+  const caps = novelAiCapabilities(model);
+  const adjusted = { ...config, promptPrefix: config.promptPrefix === DEFAULT_CONFIG.promptPrefix ? "anime visual novel scene" : config.promptPrefix };
+  const entry = describeCue(adjusted, scene, cue, appearances, "novelai").entry;
+  const characterSections = caps.structured ? entry.prompt.characterSections ?? [] : [];
+  const base = entry.prompt.sections.filter((section) => !characterSections.includes(section));
+  const joined = base.join(", ");
+  const quality = config.novelAiQualityTags === false ? [] : splitTopLevelCsv(novelAiQualityTags(model))
+    .filter((tag) => !splitTopLevelCsv(joined).some((present) => present.trim().toLowerCase() === tag.trim().toLowerCase()));
+  const prompt = renderNovelAiEmphasis([...base, ...quality].join(", "), model);
+  const negative = config.novelAiUseDefaultNegative !== false && config.negativePrompt === DEFAULT_CONFIG.negativePrompt
+    ? NOVELAI_NEGATIVE_DEFAULT : config.negativePrompt;
+  const negativePrompt = renderNovelAiEmphasis(negative, model);
+  return { prompt, negativePrompt, parameters: {
+    qualityToggle: false, // Explicit tags above make additions visible and avoid duplicate host defaults.
+    negativePrompt,
+    characterTags: characterSections.map((tags) => ({ tags: renderNovelAiEmphasis(tags, model) }))
+  } };
 }
 
 export function compileNegativePrompt(
@@ -327,7 +355,8 @@ export function sceneImageIdentityFor(
   provider: string | null,
   reference?: SceneImageReference
 ): SceneImageIdentity {
-  const description = describeCue(config, scene, cue, characterAppearance);
+  const description = describeCue(config, scene, cue, characterAppearance, provider);
+  const nai = provider === "novelai" ? compileNovelAiRequest(config, scene, cue, characterAppearance) : null;
   const { connectionId, workflowId } = splitConnectionSelection(config.imageConnectionId);
   return {
     subject: {
@@ -343,13 +372,13 @@ export function sceneImageIdentityFor(
     action: description.actionTag,
     framing: description.framing,
     request: {
-      prompt: renderPrompt(description.entry.prompt, description.promptSyntax),
-      negativePrompt: compileNegativePrompt(config, scene, cue, characterAppearance),
+      prompt: nai?.prompt ?? renderPrompt(description.entry.prompt, description.promptSyntax),
+      negativePrompt: nai?.negativePrompt ?? compileNegativePrompt(config, scene, cue, characterAppearance),
       provider,
       connectionId: connectionId ? (workflowId ? `${connectionId}::${workflowId}` : connectionId) : null,
       model: config.imageModel,
-      parameters: userImageParameters(config),
-      promptSyntax: description.promptSyntax,
+      parameters: { ...userImageParameters(config), ...(nai?.parameters ?? {}) },
+      promptSyntax: nai ? "nai" : description.promptSyntax,
       referenceAnchoring: referenceAnchoringEnabled(config),
       // Only present in card mode, so default ("captured") cache keys keep
       // their exact bytes. Card mode also carries the actually chosen
@@ -436,7 +465,9 @@ export async function resolveCacheCues(
   const haveJob = new Set(existingJobs.map((job) => job.jobId));
   const pending = candidates.filter((cue) => !haveJob.has(cue.assetJobId));
   if (pending.length === 0) return [];
-  const provider = options.provider !== undefined ? options.provider : await resolveImageProviderId(spindle, config, userId);
+  const profile = await resolveImageProfile(spindle, config, userId);
+  const provider = options.provider !== undefined ? options.provider : profile.provider;
+  if (provider === "novelai") config = { ...config, imageModel: config.imageModel || profile.model || "nai-diffusion-4-5-full" };
   const verify = options.verifyImage ?? defaultSceneImageVerifier(spindle, userId);
   const log = options.log ?? (() => {});
   // Card mode keys carry the chosen reference, so candidates resolve it the
@@ -678,17 +709,21 @@ async function resolveImageProviderId(
   config: VisualNovelConfig,
   userId?: string
 ): Promise<string | null> {
+  return (await resolveImageProfile(spindle, config, userId)).provider;
+}
+
+async function resolveImageProfile(spindle: SpindleAPI, config: VisualNovelConfig, userId?: string): Promise<{ provider: string | null; model: string | null }> {
   try {
     const { connectionId } = splitConnectionSelection(config.imageConnectionId);
     if (connectionId) {
       const connection = await spindle.imageGen.getConnection(connectionId, userId);
-      return connection?.provider ?? null;
+      return { provider: connection?.provider?.trim().toLowerCase() ?? null, model: connection?.model ?? null };
     }
     const connections = await spindle.imageGen.listConnections(userId);
     const chosen = connections.find((candidate) => candidate.is_default) ?? connections[0];
-    return chosen?.provider ?? null;
+    return { provider: chosen?.provider?.trim().toLowerCase() ?? null, model: chosen?.model ?? null };
   } catch {
-    return null;
+    return { provider: null, model: null };
   }
 }
 
@@ -706,9 +741,11 @@ export async function generateAssets(
   const providerKey = `image:${config.imageConnectionId ?? "default"}`;
   const scheduler = new AssetScheduler({ [providerKey]: { concurrency: config.imageConcurrency } });
   const cache = cacheOptions.sceneCache ?? null;
-  // The provider id is part of the cache key, so resolve it whenever the cache
-  // is on; reference anchoring keeps its own gate below.
-  const provider = referenceAnchoringEnabled(config) || cache ? await resolveImageProviderId(spindle, config, userId) : null;
+  // Provider detection also selects creation-reference formatting, even when
+  // caching and image-reference anchoring are both disabled.
+  const profile = await resolveImageProfile(spindle, config, userId);
+  const provider = profile.provider;
+  if (provider === "novelai") config = { ...config, imageModel: config.imageModel || profile.model || "nai-diffusion-4-5-full" };
   const anchorable = referenceAnchoringEnabled(config) && provider !== null && REFERENCE_PROVIDERS.has(provider);
   const cardSource = anchorable && config.referenceSource === "card";
 
@@ -862,8 +899,9 @@ export async function generateAssets(
         const scene = sceneForCue(plan, cue);
         const visualState = resolveCueCharacterVisualState(scene, cue, characterAppearance);
         if (cue.resolvedIdentity !== undefined && !cue.resolvedIdentity.trim()) throw new Error(`No usable appearance was resolved for "${visualState.characterName}". Replan this turn with a character description; the previous character will not be substituted.`);
-        const prompt = compileImagePrompt(config, scene, cue, characterAppearance);
-        const negativePrompt = compileNegativePrompt(config, scene, cue, characterAppearance);
+        const prompt = compileImagePrompt(config, scene, cue, characterAppearance, undefined, provider);
+        const nai = provider === "novelai" ? compileNovelAiRequest(config, scene, cue, characterAppearance) : null;
+        const negativePrompt = nai?.negativePrompt ?? compileNegativePrompt(config, scene, cue, characterAppearance);
         const characterName = visualState.characterName;
         const characterKey = visualState.characterKey;
 
@@ -989,6 +1027,7 @@ export async function generateAssets(
           const { connectionId, workflowId } = splitConnectionSelection(config.imageConnectionId);
           const effectiveParameters = {
             ...parameters,
+            ...(nai?.parameters ?? {}),
             ...(workflowId ? { workflow_id: workflowId } : {})
           };
           // Relay/capture waits and storage operations can outlive cancellation.

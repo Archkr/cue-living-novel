@@ -126,6 +126,7 @@ export type CreativeConcept = {
 };
 
 export type AssembledPrompt = {
+  characterSections?: string[];
   /** Ordered tag and prose sections, rendered with syntax-specific separators. */
   sections: string[];
   /** Default prompt style keeps legacy formatting; Anima uses normalized ordered sections. */

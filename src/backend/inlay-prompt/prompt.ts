@@ -42,7 +42,10 @@ function stripParenthetical(value: string): string {
 function displayName(name: string, config: Config): string {
   const clean = stripParenthetical(name);
   const source = config.originalCreationName.trim();
-  return config.originalReference && clean && source ? `${clean} \\(${source}\\)` : clean;
+  if (!config.originalReference || !clean || !source) return clean;
+  return config.originalReferenceFormat === "tags" || config.promptSyntax === "nai"
+    ? `${clean}, ${source}`
+    : `${clean} \\(${source}\\)`;
 }
 
 export function normalizeCharacterName(value: unknown): string {
@@ -845,7 +848,7 @@ function assembleAnimaPrompt(
     ...backgroundElements.map((value) => stripOrReplaceNames(value, replacements, false)),
     ...description.map((value) => stripOrReplaceNames(value, replacements, false))
   ].filter(Boolean).join(", ");
-  return { sections: [
+  return { characterSections, sections: [
     stripOrReplaceNames(
       perspectiveMode === "asset"
         ? assetSituation(shot.situation, characters[0])
@@ -952,10 +955,11 @@ function assemblePromptForPerspective(
   const suffix = stripOrReplaceNames(config.customPositiveSuffix, replacements, true);
   const prefixes = [presetPrefix, prefix].filter(Boolean);
   const format = core.format || "ordered";
-  const corePrompt: AssembledPrompt = { sections: [...core.sections], format };
+  const corePrompt: AssembledPrompt = { ...core, sections: [...core.sections], format };
   const shotNegative = stripOrReplaceNames(unique(csvParts(shot.negative)).join(", "), replacements, true);
   return {
     prompt: {
+      ...(core.characterSections ? { characterSections: core.characterSections } : {}),
       sections: [...prefixes, ...core.sections, suffix].map((section) => section.trim()).filter(Boolean),
       format
     },

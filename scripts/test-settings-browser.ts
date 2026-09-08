@@ -208,6 +208,29 @@ try {
   await settings.locator("[data-sample-replay]").click();
   assert.equal(await settings.locator("[data-sample-stage]").getAttribute("data-typing"), null);
 
+  // NovelAI-only prompt controls live under Advanced and preserve saved opt-outs.
+  await page.evaluate(() => {
+    const f = (window as any).settingsFixture;
+    f.panel.setConnectionCatalog("image", { status: "ready", options: [{ id: "nai", name: "NovelAI", provider: "novelai", model: "nai-diffusion-4-5-full", isDefault: true }] });
+    f.config = { ...f.config, imageConnectionId: "nai", generateImages: true, useNativeCardImages: false };
+    f.panel.setConfig(f.config);
+    const root = document.querySelector("[data-vn-settings]")!.shadowRoot!;
+    let node: Element | null = root.querySelector("[data-novelai-prompt-controls]");
+    while (node) { if (node instanceof HTMLDetailsElement) node.open = true; node = node.parentElement; }
+  });
+  const quality = settings.locator('[name="novelAiQualityTags"]');
+  assert.equal(await quality.isVisible(), true);
+  await quality.uncheck();
+  await settings.locator('[name="novelAiUseDefaultNegative"]').uncheck();
+  await page.keyboard.press("Control+s");
+  assert.equal((await lastPatch(page))?.novelAiQualityTags, false);
+  assert.equal((await lastPatch(page))?.novelAiUseDefaultNegative, false);
+  await page.screenshot({ path: ".cache/ux-redesign/settings-nai-controls.png" });
+  await page.evaluate(() => {
+    const f = (window as any).settingsFixture;
+    f.panel.setConnectionCatalog("image", { status: "ready", options: [{ id: "nai", name: "Other", provider: "comfyui", model: "m", isDefault: true }] });
+  });
+  assert.equal(await quality.isVisible(), false);
   assert.deepEqual(external, [], "settings page must not contact the network");
   console.log("settings browser checks passed");
 } finally {

@@ -10,6 +10,8 @@ import {
   portraitIdentityFingerprint,
   referenceAnchoringEnabled,
   referenceParametersFor,
+  sceneImageIdentityFor,
+  compileNovelAiRequest,
   splitConnectionSelection
 } from "./images.js";
 import { loadPortraits, portraitStatePath, savePortrait, type StoredPortrait } from "./storage.js";
@@ -264,6 +266,54 @@ function imageRuntime(provider: string): {
 }
 
 describe("generateAssets reference anchoring", () => {
+  test("NAI capabilities follow the saved profile model when Cue has no model override", async () => {
+    for (const model of ["nai-diffusion-3", "nai-diffusion-5-full"]) {
+      const { spindle, calls } = imageRuntime("novelai");
+      spindle.imageGen.listConnections = (async () => [{ provider: "novelai", model, is_default: true }]) as typeof spindle.imageGen.listConnections;
+      const config = { ...DEFAULT_CONFIG, imageModel: "", imageConnectionId: null, referenceAnchoring: false };
+      const turn = plan([cue("profile-model")]);
+      await generateAssets(spindle, turn, createAssetJobs(turn, config), config, new AbortController().signal, () => {});
+      expect(calls[0]!.parameters.characterTags).toHaveLength(model === "nai-diffusion-3" ? 0 : 1);
+    }
+  });
+  test("NAI V3 keeps a combined prompt while V4+ separates identity from the scene", () => {
+    for (const model of ["nai-diffusion-3", "nai-diffusion-4-full", "nai-diffusion-4-5-full", "nai-diffusion-5-full"]) {
+      const config = { ...DEFAULT_CONFIG, imageModel: model, novelAiQualityTags: false, negativePrompt: "(watermark:1.2)", promptPrefix: "custom style" };
+      const compiled = compileNovelAiRequest(config, scene, cue("split"));
+      expect(compiled.prompt).toContain("Library");
+      expect(compiled.prompt).toContain("custom style");
+      expect(compiled.prompt).not.toContain("masterpiece");
+      expect(compiled.parameters.qualityToggle).toBe(false);
+      if (model === "nai-diffusion-3") {
+        expect(compiled.parameters.characterTags).toHaveLength(0);
+        expect(compiled.prompt).toContain("silver hair");
+        expect(compiled.negativePrompt).toContain("{watermark}");
+      } else {
+        expect(compiled.prompt).not.toContain("silver hair");
+        expect(compiled.parameters.characterTags[0]!.tags).toContain("silver hair");
+        expect(compiled.parameters.characterTags[0]!.tags).not.toContain("Library");
+        expect(compiled.negativePrompt).toBe("1.2::watermark::");
+      }
+    }
+  });
+
+  test("NAI defaults do not replace edited or explicitly empty negative prompts", () => {
+    const config = { ...DEFAULT_CONFIG, imageModel: "nai-diffusion-5-full" };
+    expect(compileNovelAiRequest(config, scene, cue("default")).negativePrompt).toContain("artistic error");
+    expect(compileNovelAiRequest({ ...config, novelAiUseDefaultNegative: false }, scene, cue("off")).negativePrompt).toBe(DEFAULT_CONFIG.negativePrompt);
+    expect(compileNovelAiRequest({ ...config, negativePrompt: "" }, scene, cue("empty")).negativePrompt).toBe("");
+    expect(compileNovelAiRequest({ ...config, promptPrefix: "masterpiece" }, scene, cue("dedupe")).prompt.match(/masterpiece/g)).toHaveLength(1);
+  });
+  test("NovelAI formats creation references as separate tags even with anchoring and cache off", async () => {
+    const { spindle, calls } = imageRuntime("novelai");
+    const config = { ...DEFAULT_CONFIG, imageModel: "nai-diffusion-4-5-full", referenceAnchoring: false, originalReference: true, originalCreationName: "Example series" };
+    const turn = plan([cue("nai-reference")]);
+    await generateAssets(spindle, turn, createAssetJobs(turn, config), config, new AbortController().signal, () => {});
+    expect((calls[0]?.parameters.characterTags as Array<{ tags: string }>)[0]!.tags).toContain("Mira, Example series");
+    expect(calls[0]?.prompt).not.toContain("\\(Example series\\)");
+    expect((calls[0]?.parameters.characterTags as Array<{ tags: string }>)[0]!.tags).toContain("silver hair");
+    expect(sceneImageIdentityFor(config, turn.scenes[0]!, turn.visualCues[0]!, undefined, "novelai").request.prompt).toBe(calls[0]!.prompt);
+  });
   const config = {
     ...DEFAULT_CONFIG,
     imageConnectionId: "conn",
@@ -290,6 +340,7 @@ describe("generateAssets reference anchoring", () => {
   });
 
   test("anchors NovelAI generations with director reference images", async () => {
+    const config = { ...DEFAULT_CONFIG, imageModel: "nai-diffusion-4-5-full", imageConcurrency: 1 };
     const { spindle, calls } = imageRuntime("novelai");
     await savePortrait(spindle, "chat", { ...portrait, identityFingerprint: portraitIdentityFingerprint("Mira", scene.identityPrompt!, config, "novelai") });
     const turnPlan = plan([cue("one", 0)]);

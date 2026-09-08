@@ -44,6 +44,8 @@ function spyStage(): VisualStageThemeTarget & { calls: string[] } {
 }
 
 const baseConfig: VisualNovelConfig = {
+  novelAiQualityTags: true,
+  novelAiUseDefaultNegative: true,
   speech: DEFAULT_CONFIG.speech,
   themePreset: "lumiverse",
   enabled: true,

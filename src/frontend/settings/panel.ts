@@ -85,6 +85,7 @@ export type SettingsPanelOptions = {
 
 /** Keys the Advanced section owns. Everything else saves as soon as it changes. */
 const ADVANCED_KEYS = [
+  "novelAiQualityTags", "novelAiUseDefaultNegative",
   "imageModel", "imageConcurrency", "parserParameters", "imageParameters", "audioDirectory",
   "includeRecentMessages", "includeCharacterContext", "includePersonaContext", "includeLorebookContext", "debugLogging",
   "promptPrefix", "promptSuffix", "negativePrompt", "originalReference", "originalCreationName", "customPlannerInstructions",
@@ -524,8 +525,14 @@ export class VisualNovelSettingsPanel {
                 <label data-field><span>Positive prefix</span><input name="promptPrefix" type="text" /></label>
                 <label data-field><span>Positive suffix</span><input name="promptSuffix" type="text" /></label>
                 <label data-field><span>Negative prompt</span><input name="negativePrompt" type="text" /></label>
+                <div data-novelai-prompt-controls hidden>
+                  <label data-check><input name="novelAiQualityTags" type="checkbox" /><span>Add NovelAI model-specific quality tags</span></label>
+                  <small>Tags are included in the sent prompt. V4.5 Curated also adds rating:general and reduces feet emphasis. Turn off for full control.</small>
+                  <label data-check><input name="novelAiUseDefaultNegative" type="checkbox" /><span>Use NovelAI defaults for an unchanged negative prompt</span></label>
+                  <small>Your edited negative prompt is always preserved. An empty field stays empty. Native emphasis and separate character prompts are selected automatically for supported models.</small>
+                </div>
                 <label data-check><input name="originalReference" type="checkbox" /><span>Include character creation / series reference tag</span></label>
-                <label data-field><span>Creation / series name</span><input name="originalCreationName" type="text" placeholder="e.g. doki doki literature club" /><small>When enabled, character tags become: Character \\(Creation\\), e.g. Miyo \\(doki doki literature club\\).</small></label>
+                <label data-field><span>Creation / series name</span><input name="originalCreationName" type="text" placeholder="e.g. doki doki literature club" /><small>When enabled, NovelAI uses: Character, series name. Other profiles use: Character \\(Creation\\). Appearance tags follow as usual.</small></label>
                 <label data-field><span>Story reader instructions</span><textarea name="customPlannerInstructions"></textarea></label>
               </div>
             </details>
@@ -941,6 +948,8 @@ export class VisualNovelSettingsPanel {
     if (!container) return;
     const effective = effectiveImageConnection(this.connectionStates.image, config.imageConnectionId);
     const isNovelAi = source === "generated" && isNovelAiConnection(effective);
+    const promptControls = this.root.querySelector<HTMLElement>("[data-novelai-prompt-controls]");
+    if (promptControls) promptControls.hidden = !isNovelAi;
     container.hidden = !isNovelAi;
     if (!isNovelAi) return;
 
@@ -1071,6 +1080,8 @@ export class VisualNovelSettingsPanel {
       promptPrefix: this.control<HTMLInputElement>("promptPrefix").value,
       promptSuffix: this.control<HTMLInputElement>("promptSuffix").value,
       negativePrompt: this.control<HTMLInputElement>("negativePrompt").value,
+      novelAiQualityTags: this.control<HTMLInputElement>("novelAiQualityTags").checked,
+      novelAiUseDefaultNegative: this.control<HTMLInputElement>("novelAiUseDefaultNegative").checked,
       originalReference: this.control<HTMLInputElement>("originalReference").checked,
       originalCreationName: this.control<HTMLInputElement>("originalCreationName").value.trim(),
       customPlannerInstructions: this.control<HTMLTextAreaElement>("customPlannerInstructions").value,
@@ -1126,6 +1137,8 @@ export class VisualNovelSettingsPanel {
     set("promptPrefix", () => { this.control<HTMLInputElement>("promptPrefix").value = config.promptPrefix; });
     set("promptSuffix", () => { this.control<HTMLInputElement>("promptSuffix").value = config.promptSuffix; });
     set("negativePrompt", () => { this.control<HTMLInputElement>("negativePrompt").value = config.negativePrompt; });
+    set("novelAiQualityTags", () => { this.control<HTMLInputElement>("novelAiQualityTags").checked = config.novelAiQualityTags; });
+    set("novelAiUseDefaultNegative", () => { this.control<HTMLInputElement>("novelAiUseDefaultNegative").checked = config.novelAiUseDefaultNegative; });
     set("originalReference", () => { this.control<HTMLInputElement>("originalReference").checked = config.originalReference; });
     set("originalCreationName", () => { this.control<HTMLInputElement>("originalCreationName").value = config.originalCreationName; });
     set("customPlannerInstructions", () => { this.control<HTMLTextAreaElement>("customPlannerInstructions").value = config.customPlannerInstructions; });
