@@ -34,6 +34,19 @@ export type StoredTurnRecord = {
   jobs: AssetJob[];
   error?: string;
   updatedAt: string;
+  /**
+   * The exact narrative text the plan was built from (macro-resolved and
+   * cleaned; inline `<img>`/`<pimg>` tags intact). `plan.paragraphs` indexes
+   * derive from this string. Absent on records stored before intake v2.
+   */
+  resolvedSourceText?: string;
+  /**
+   * Intake bookkeeping. `version: 2` means `plan.key.sourceFingerprint` is a
+   * selection fingerprint (resolved text with volatile macros masked) and
+   * `rawFingerprint` hashes the stored message text it came from. Records
+   * without it were fingerprinted on raw (pre-macro) or fully resolved text.
+   */
+  source?: { version: 2; rawFingerprint: string };
   settingsSnapshot?: Record<string, unknown>;
   attempts?: Array<{
     attemptNumber: number;
@@ -599,6 +612,10 @@ export async function loadTurnRecord(
     plan: TurnPlanSchema.parse(raw.plan),
     jobs: Array.isArray(raw.jobs) ? raw.jobs.map((job) => AssetJobSchema.parse(job)) : [],
     ...(typeof raw.error === "string" ? { error: raw.error } : {}),
+    ...(typeof raw.resolvedSourceText === "string" ? { resolvedSourceText: raw.resolvedSourceText } : {}),
+    ...(raw.source && typeof raw.source === "object" && raw.source.version === 2 && typeof raw.source.rawFingerprint === "string"
+      ? { source: { version: 2 as const, rawFingerprint: raw.source.rawFingerprint } }
+      : {}),
     ...(raw.settingsSnapshot && typeof raw.settingsSnapshot === "object" ? { settingsSnapshot: raw.settingsSnapshot as Record<string, unknown> } : {}),
     ...(Array.isArray(raw.attempts) ? { attempts: raw.attempts as NonNullable<StoredTurnRecord["attempts"]> } : {}),
     updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : new Date(0).toISOString()

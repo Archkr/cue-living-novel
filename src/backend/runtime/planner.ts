@@ -156,6 +156,12 @@ export type PlanTurnInput = {
   chatId: string;
   message: ChatMessageDTO & { role?: string };
   content: string;
+  /**
+   * Identity of the source text for the turn key. Defaults to a hash of
+   * `content`; the controller passes the selection fingerprint (volatile
+   * macros masked) so a `{{random}}` re-resolve never reads as a new turn.
+   */
+  sourceFingerprint?: string;
   previousScene: SceneState | null;
   previousContinuity: TurnPlan["terminalContinuity"] | null;
   recentMessages: Array<Pick<ChatMessageDTO, "name" | "content" | "is_user">>;
@@ -2109,7 +2115,7 @@ export async function planTurn(spindle: SpindleAPI, input: PlanTurnInput): Promi
   const protagonistName = characterState.protagonist.name.trim();
   const identityBlock = singleCharacterTagBlock(characterState);
 
-  const sourceFingerprint = stableHash(`${input.message.id}\0${input.message.swipe_id}\0${input.content}`);
+  const sourceFingerprint = input.sourceFingerprint ?? stableHash(`${input.message.id}\0${input.message.swipe_id}\0${input.content}`);
   const revision = (input.previousScene?.revision ?? 0) + 1;
   const key = TurnKeySchema.parse({
     chatId: input.chatId,

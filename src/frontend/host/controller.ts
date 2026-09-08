@@ -369,7 +369,12 @@ export function connectionCatalogStates(message: {
  * goes through this, which is how the backend relearns view state after a
  * restart. Without a chat there is nothing to announce.
  */
-export function viewStateMessages(chatId: string, viewOpen: boolean): FrontendRequest[] {
+export function viewStateMessages(chatId: string, viewOpen: boolean | undefined): FrontendRequest[] {
+  // `undefined` = say nothing about the view. Used for the boot request: a
+  // page reload must not close a view the backend still holds open (and
+  // abort its image batch) before the config says whether autoEnter reopens
+  // it. The first vn_state reply settles the view explicitly.
+  if (viewOpen === undefined) return [{ type: "vn_get_state", chatId }];
   if (!chatId) return [{ type: "vn_get_state", chatId, viewOpen }];
   return [
     { type: "vn_view", chatId, open: viewOpen },
@@ -630,7 +635,10 @@ export function setupVisualNovelFrontend(baseContext: SpindleFrontendContext): (
   }
 
   let lastAnnouncedChatId = "";
-  function requestState(): void {
+  // True until the first vn_state answers the boot request; that reply decides
+  // whether the view opens (autoEnter) or is explicitly closed.
+  let bootPending = true;
+  function requestState(options: { boot?: boolean } = {}): void {
     const current = chatId();
     // Leaving a chat (home screen, or another chat) closes the previous view
     // explicitly; the backend must not keep paying for a chat nobody is watching.
@@ -638,7 +646,7 @@ export function setupVisualNovelFrontend(baseContext: SpindleFrontendContext): (
       ctx.sendToBackend({ type: "vn_view", chatId: lastAnnouncedChatId, open: false });
     }
     lastAnnouncedChatId = current;
-    for (const message of viewStateMessages(current, active)) ctx.sendToBackend(message);
+    for (const message of viewStateMessages(current, options.boot ? undefined : active)) ctx.sendToBackend(message);
   }
 
   const connectionOptions: Record<"planner" | "image", readonly ConnectionCatalogOption[]> = { planner: [], image: [] };
@@ -858,6 +866,14 @@ export function setupVisualNovelFrontend(baseContext: SpindleFrontendContext): (
       speechSettings?.setConfig(configRef.current.speech);
       settingsPanel?.setConfig(configRef.current);
       if (configRef.current?.autoEnter && !active) activate();
+      if (bootPending) {
+        // The boot request said nothing about the view. Now that the config is
+        // known: autoEnter has just reopened it; otherwise the view the backend
+        // may still hold open from before the reload is closed for real.
+        bootPending = false;
+        const bootChatId = chatId();
+        if (!active && bootChatId) ctx.sendToBackend({ type: "vn_view", chatId: bootChatId, open: false });
+      }
       if (message.turn && message.turn.chatId === chatId()) {
         applyTurn(message.turn, turn);
       } else {
@@ -999,7 +1015,7 @@ export function setupVisualNovelFrontend(baseContext: SpindleFrontendContext): (
   });
 
   requestConnectionCatalog();
-  requestState();
+  requestState({ boot: true });
   ctx.ready();
 
   const cleanup = (): void => {

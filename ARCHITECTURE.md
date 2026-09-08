@@ -74,17 +74,20 @@ Lumiverse staging host
 
 RisuAI cards ported through LumiRealm keep every alternative first scene inside one greeting message, wrapped in CBS `{{#when}}` blocks, plus a `$messageSelector` placeholder line that a display regex script turns into a scene picker. The raw stored text never changes; picking a scene only sets a chat variable.
 
-Cue therefore never plans raw message text. Every path that feeds a message into planning (GENERATION_ENDED, swipe/edit reconcile, chat switch, `vn_get_state` bootstrap, retry, `vn_refresh`) goes through `resolveMessageText` in `src/backend/runtime/message-text.ts`:
+Cue therefore never plans raw message text. Every path that feeds a message into planning (GENERATION_ENDED, swipe/edit reconcile, chat switch, `vn_get_state` bootstrap, retry, `vn_refresh`) goes through `resolveMessageIntake` in `src/backend/runtime/message-text.ts`:
 
 1. Fast path: a message without macro syntax and without a placeholder-only line is returned byte-identical; the host is not called.
-2. `spindle.macros.resolve(text, { chatId, commit: false })` runs the host macro engine. With LumiRealm active, its interceptor collapses the `{{#when}}` blocks to the selected scene. On error or a missing API the raw text is used.
-3. `cleanResolvedText` removes what is left: unresolved `{{#...}}...{{/...}}` blocks together with their content (an unselected scene must not leak), unresolved inline `{{...}}` tokens, and placeholder-only `$identifier` lines. `<pimg>`/`<img>` tags, `{{img::...}}` references, and `{{char}}`/`{{user}}` display macros pass through; the planner substitutes the display macros with real names.
+2. Bounded pure-subtree masking: a token is masked only when it is a safe, output-position pure transform subtree (containing only pure volatile macros `random`/`pick`/`roll`/`time`/`date`/`weekday`/`isotime`/`isodate`/`datetimeformat` and pure string transforms `upper`/`lower`/`capitalize`/`trim`/`reverse`, with no control structures, variable reads/writes, or external context). If a message contains any stateful/mutating macro (`counter`, `toggle`, `rcounter`, `setvar`, `addvar`, `let`, etc.) or volatile macros in control positions, masking is bypassed entirely: the host executes a single full-raw dry resolve, preserving exact whole-message evaluation order and shared environment state.
+3. For maskable messages, `spindle.macros.resolve(maskedText, { chatId, commit: false })` runs the host macro engine once; this single call chooses the branch. Each masked token that survived in the chosen branch is then evaluated on its own (`commit: false`) to fill the planning text in. A resolve that throws, a missing API, or `{{#...}}` blocks surviving the resolve (no interceptor loaded) mark the intake `resolved: false`.
+4. `cleanResolvedText` removes what is left: unresolved `{{#...}}...{{/...}}` blocks together with their content (an unselected scene must not leak), unresolved inline `{{...}}` tokens, and placeholder-only `$identifier` lines. `<pimg>`/`<img>` tags, `{{img::...}}` references, and `{{char}}`/`{{user}}` display macros pass through; the planner substitutes the display macros with real names.
 
-The turn fingerprint (`fingerprintForMessage`) is computed on the resolved text, so picking a different scene on the same raw message is a new turn and the old plan is not reused. History messages read for planner context resolve the same way, bounded to messages that contain macro syntax and cached per message id + swipe within one planning run. `vn_get_state` re-resolves the latest assistant message when it contains macro syntax, so a selection change is picked up when the view opens; `vn_refresh` does the same on demand.
+The intake yields two strings. `text` is the exact narrative the planner, the stored turn (`resolvedSourceText`, also handed to the image/reference pipeline) and the frontend use. `selectionText` retains the indexed placeholders (`\u2062N\u2062`), so distinct tokens in alternative branches produce distinct fingerprints. The record stores `source: { version: 2, rawFingerprint }`. `relateRecord()` tests `rawFingerprint` first: an edited message (even changing only volatile token arguments) is immediately classified as a plain edit (`changed`), replanning with continuity intact and no identity reset. When raw text is identical and selection text matches, the record is `current`. When raw text is identical and selection text differs: if the message had only stable pure masking (`stableSelection: true`), it is classified as `reselected` (replan + single-turn greeting identity reset); if the message had unmaskable volatile macros in conditions or stateful blocks (`stableSelection: false`), it is classified as `changed` (replanned to show the newly rolled branch, but identity state is never reset). Limitation: unmaskable volatile macros in conditions/headers re-roll on reopen, incurring replan cost as on older builds; identity reset is prevented, avoiding data loss.
+
+History messages read for planner context resolve the same way, bounded to messages that contain macro syntax and cached per message id + swipe within one planning run. `vn_get_state` re-resolves the latest assistant message when it contains macro syntax, so a selection change is picked up when the view opens; `vn_refresh` does the same on demand. When the host cannot resolve right now (`resolved: false`) and a turn is already stored for that message, the stored turn stays authoritative: it is sent as is, never replaced by a waiting state or a replan built from the stripped raw text.
 
 Unselected-greeting rule (evidence-based, no bare length heuristic): a message enters the waiting state only when the raw text contained macro blocks or a placeholder line AND either the cleaned text is empty, or there is explicit default-branch evidence — the raw greeting carries a placeholder-only line, has at least two selectable blocks, and the cleaned text equals the first block's single-line body (the branch such cards fall into while the selection variable is unset). Then nothing is planned and no images are generated; the backend sends `vn_waiting` and the reading view shows a card asking the reader to pick a starting scene in the chat. A legitimate short opening scene without that evidence is planned normally. Detection is structural; the placeholder wording is never matched.
 
-When a greeting is re-resolved to a different scene while it is the chat's only assistant turn, the chat's durable identity state (frozen protagonist visual state, character registry, per-chat appearance roster, scene lineage and scene-image cache scope) is reset to the empty pre-greeting baseline before replanning, so the discarded scene's cast cannot leak into the newly selected one. Mid-chat turns are never reset. Retry (`vn_retry_turn`) re-resolves macro-bearing messages first and replans when the resolution changed. A cancel, deletion, edit event, or new generation that arrives while a macro resolve is in flight supersedes that intake (per-chat intake epoch), so a stale resolve can never enqueue a plan afterwards.
+When a greeting is re-resolved to a different scene (same stored text, different selection) while it is the chat's only assistant turn, the chat's durable identity state (frozen protagonist visual state, character registry, per-chat appearance roster, scene lineage and scene-image cache scope) is reset to the empty pre-greeting baseline before replanning, so the discarded scene's cast cannot leak into the newly selected one. Mid-chat turns and plain edits of the greeting are never reset. Retry (`vn_retry_turn`) re-resolves macro-bearing messages first and replans when the resolution changed. A cancel, deletion, edit event, or new generation that arrives while a macro resolve is in flight supersedes that intake (per-chat intake epoch), so a stale resolve can never enqueue a plan afterwards.
 
 ## Turn flow
 
@@ -92,8 +95,13 @@ When a greeting is re-resolved to a different scene while it is the chat's only 
 
 The backend only does automatic work for chats whose Cue view is open. The
 frontend announces visibility with `vn_view { chatId, open }` and repeats the
-flag as `viewOpen` on every `vn_get_state` (boot, reconnect, activation, chat
-switch), so a restarted backend relearns the state from the next request. The
+flag as `viewOpen` on every `vn_get_state` (activation, chat switch), so a
+restarted backend relearns the state from the next request. The boot request
+after a page load says nothing about the view (`vn_get_state` without
+`viewOpen`, no `vn_view`): the backend may still hold the view open from before
+the reload, and its image batch must survive until the config says whether
+`autoEnter` reopens the view. The first `vn_state` reply then either activates
+(which announces `open:true`) or sends an explicit `vn_view open:false`. The
 backend keeps one open chat per user in `runtime/view-registry.ts`.
 
 Gated triggers: `GENERATION_ENDED`, the `MESSAGE_SWIPED` / `SWIPE_EDITED` /
@@ -102,22 +110,27 @@ is skipped entirely (no planner call, no image jobs) when `config.enabled` is
 false or the chat's view is closed; with `debugLogging` on, each skip is traced
 (`skipped ...: view closed`). Only an explicit announcement opens the view:
 `vn_view` with `open:true`, `vn_get_state` with `viewOpen:true`, or an explicit
-user action from the open view (`vn_submit`, `vn_retry_turn`; choices submit
-through `vn_submit`). A `vn_get_state` without `viewOpen` changes nothing, so a
+user action from the open view (`vn_submit`, `vn_retry_turn`, `vn_refresh`;
+choices submit through `vn_submit`). A `vn_get_state` without `viewOpen` changes nothing, so a
 background request never opens a closed view.
 
 Closing the view (`vn_view` with `open:false`, or `vn_get_state` with
 `viewOpen:false`) aborts the chat's in-flight work the same way
 `GENERATION_STARTED` does — turn ownership dropped, asset batch aborted,
 queued planning cancelled, scene-cache admission released — and persists
-`cancelled` over queued/generating jobs so nothing looks stuck. Leaving a chat
+`cancelled` over queued/generating jobs of the aborted turn so nothing looks
+stuck. That stamp is keyed to the aborted turn and skipped only when a new
+owner (retry, reply, reuse) has claimed the chat's turn meanwhile; a view that
+merely reopened still gets the stamp, plus `vn_asset` updates, because the
+aborted batch never resumes on its own. Leaving a chat
 sends `vn_view open:false` for the previous chat, and the home screen (empty
 chat id) closes whichever view is open, so a chat nobody is watching never
 keeps planning or generating. Opening one chat displaces the user's previously
 open chat, whose work is aborted. Late results are rejected by the ownership
 guards. Reopening goes through `vn_get_state`: a missing or stale stored
 record (a newer reply arrived while closed, detected by message id/fingerprint)
-plans the latest reply once. Cancelled jobs stay cancelled; they are never
+plans the latest reply once, and `vn_state` then carries `turn: null` so the
+stale turn is never rendered first. Cancelled jobs stay cancelled; they are never
 resumed on their own — the reader reruns them by hand with `vn_retry_turn`.
 
 ```text
