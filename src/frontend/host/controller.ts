@@ -410,17 +410,15 @@ export function setupVisualNovelFrontend(baseContext: SpindleFrontendContext): (
     sfxVolume: configRef.current?.sfxVolume ?? 0.8,
   });
 
-  // Speech (default-off TTS). Own player and lifecycle; never the SFX channel.
-  const speechDock = new SpeechDock({
-    mount: app.root,
-    onPlay: () => { void speech.playCurrent(); },
-    onPause: () => speech.pause(),
-    onStop: () => speech.stop("user-stop"),
-  });
-  const speech = new SpeechController({
-    transport: createSpeechTransport(),
-    onStatus: (status) => speechDock.setStatus(status),
-  });
+  let speech: SpeechController;
+  let speechDock: SpeechDock;
+
+  const isSpeechHoldingAuto = (): boolean => {
+    if (!speech) return false;
+    const s = speech.getStatus();
+    return s.kind === "loading" || s.kind === "playing" || s.kind === "paused";
+  };
+
   const syncSpeechCursor = (view: TurnView | null, paragraphIndex: number): void => {
     speech.setCursor(view && view.status === "ready" ? speechCursorFor(view, paragraphIndex) : null);
   };
@@ -449,6 +447,7 @@ export function setupVisualNovelFrontend(baseContext: SpindleFrontendContext): (
   const stage = new VnStage({
     mount: app.root,
     themePreset: configRef.current?.themePreset ?? "lumiverse",
+    isAutoAdvanceHeld: () => isSpeechHoldingAuto(),
     onExit: () => deactivate(),
     onPrevious: (paragraphIndex) => {
       panels.setCursor(paragraphIndex);
@@ -510,6 +509,26 @@ export function setupVisualNovelFrontend(baseContext: SpindleFrontendContext): (
   });
 
   let panelCapture: { chatId: string; messageId: string; fingerprint: string | null; cards: Array<{ title: string; html: string }> } | null = null;
+  // Speech (default-off TTS). Own player and lifecycle; never the SFX channel.
+  // Mounted into stage.panelMount so it renders in front of the stage scene and background.
+  speechDock = new SpeechDock({
+    mount: stage.panelMount,
+    onPlay: () => { void speech.playCurrent(); },
+    onPause: () => speech.pause(),
+    onStop: () => speech.stop("user-stop"),
+  });
+  speech = new SpeechController({
+    transport: createSpeechTransport(),
+    onStatus: (status) => {
+      speechDock.setStatus(status);
+      if (status.kind === "loading" || status.kind === "playing" || status.kind === "paused") {
+        stage.holdAutoPlay();
+      } else {
+        stage.checkAutoPlay();
+      }
+    },
+  });
+
   const panels = new PanelDock(stage.panelMount);
   const panelRequests = new Map<string, { resolve: (template: string) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
   panels.onResolveTemplate = (template) => new Promise((resolve, reject) => {

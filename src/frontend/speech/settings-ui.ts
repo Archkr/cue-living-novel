@@ -79,6 +79,10 @@ export class SpeechSettingsSection {
    * added row vanish on the save echo before a profile can be chosen.
    */
   private pendingOverrideNames = new Set<string>();
+  /** Uncommitted character name in the Add input; preserved across re-renders. */
+  private draftAddName = "";
+  /** Tracked chat id to clear uncommitted name drafts on chat switch. */
+  private lastChatId = "";
   private destroyed = false;
 
   constructor(private readonly options: SpeechSettingsSectionOptions) {
@@ -91,12 +95,20 @@ export class SpeechSettingsSection {
 
   setConfig(speech: SpeechSettings): void {
     if (this.destroyed) return;
+    const previous = this.settings;
     this.settings = speech;
     // Drafts that have since been saved (here or elsewhere) stop being drafts.
+    let draftsRemoved = false;
     for (const key of [...this.pendingOverrideNames]) {
-      if (speech.characters[key]) this.pendingOverrideNames.delete(key);
+      if (speech.characters[key]) {
+        this.pendingOverrideNames.delete(key);
+        draftsRemoved = true;
+      }
     }
-    this.render();
+    const changed = JSON.stringify(previous) !== JSON.stringify(speech);
+    if (changed || draftsRemoved) {
+      this.render();
+    }
   }
 
   destroy(): void {
@@ -114,8 +126,13 @@ export class SpeechSettingsSection {
     this.render();
   }
 
-  private profileSelect(selected: SpeechVoiceRef | null, onChange: (ref: SpeechVoiceRef | null) => void): HTMLSelectElement {
+  private profileSelect(
+    selected: SpeechVoiceRef | null,
+    fieldKey: string,
+    onChange: (ref: SpeechVoiceRef | null) => void,
+  ): HTMLSelectElement {
     const select = document.createElement("select");
+    select.setAttribute("data-speech-field", fieldKey);
     const none = document.createElement("option");
     none.value = "";
     none.textContent = "Not set";
@@ -146,13 +163,18 @@ export class SpeechSettingsSection {
     return select;
   }
 
-  private voiceField(selected: SpeechVoiceRef | null, onChange: (ref: SpeechVoiceRef) => void): HTMLElement {
+  private voiceField(
+    selected: SpeechVoiceRef | null,
+    fieldKey: string,
+    onChange: (ref: SpeechVoiceRef) => void,
+  ): HTMLElement {
     const wrap = document.createElement("div");
     wrap.className = "field";
     const label = document.createElement("span");
     label.textContent = "Voice (optional)";
     const input = document.createElement("input");
     input.type = "text";
+    input.setAttribute("data-speech-field", fieldKey);
     input.placeholder = "Profile default voice";
     input.value = selected?.voice ?? "";
     input.disabled = !selected;
@@ -168,6 +190,9 @@ export class SpeechSettingsSection {
         datalist.appendChild(option);
       }
     }
+    input.addEventListener("input", () => {
+      if (selected) selected.voice = input.value;
+    });
     input.addEventListener("change", () => {
       if (selected) onChange({ ...selected, voice: input.value });
     });
@@ -205,20 +230,45 @@ export class SpeechSettingsSection {
     return wrap;
   }
 
-  private voiceRefEditor(title: string, help: string, selected: SpeechVoiceRef | null, apply: (next: SpeechSettings, ref: SpeechVoiceRef | null) => void): HTMLElement {
+  private voiceRefEditor(
+    title: string,
+    help: string,
+    selected: SpeechVoiceRef | null,
+    fieldPrefix: string,
+    apply: (next: SpeechSettings, ref: SpeechVoiceRef | null) => void,
+  ): HTMLElement {
     const fieldset = document.createElement("fieldset");
     const legend = document.createElement("legend");
     legend.textContent = title;
     const helpEl = document.createElement("small");
     helpEl.textContent = help;
-    const select = this.profileSelect(selected, (ref) => this.save((next) => apply(next, ref)));
-    const voice = this.voiceField(selected, (ref) => this.save((next) => apply(next, ref)));
+    const select = this.profileSelect(selected, `${fieldPrefix}-profile`, (ref) => this.save((next) => apply(next, ref)));
+    const voice = this.voiceField(selected, `${fieldPrefix}-voice`, (ref) => this.save((next) => apply(next, ref)));
     fieldset.append(legend, helpEl, select, voice);
     return fieldset;
   }
 
   private render(): void {
     if (this.destroyed) return;
+
+    // Capture focus & text selection before DOM replacement
+    const activeEl = this.shadow.activeElement as HTMLElement | null;
+    const activeField = activeEl?.getAttribute("data-speech-field");
+    let selectionStart: number | null = null;
+    let selectionEnd: number | null = null;
+    if (activeEl instanceof HTMLInputElement || activeEl instanceof HTMLTextAreaElement) {
+      try {
+        selectionStart = activeEl.selectionStart;
+        selectionEnd = activeEl.selectionEnd;
+      } catch { /* ignored for non-text inputs */ }
+    }
+
+    const currentChatId = this.options.getChatId();
+    if (currentChatId !== this.lastChatId) {
+      this.lastChatId = currentChatId;
+      this.draftAddName = "";
+    }
+
     const settings = this.settings;
     const style = document.createElement("style");
     style.textContent = SECTION_CSS;
@@ -239,6 +289,7 @@ export class SpeechSettingsSection {
     enable.className = "check";
     const enableInput = document.createElement("input");
     enableInput.type = "checkbox";
+    enableInput.setAttribute("data-speech-field", "enable");
     enableInput.checked = settings.enabled;
     enableInput.addEventListener("change", () => this.save((next) => { next.enabled = enableInput.checked; }));
     const enableText = document.createElement("span");
@@ -254,6 +305,7 @@ export class SpeechSettingsSection {
     const loadRow = document.createElement("div");
     const loadButton = document.createElement("button");
     loadButton.type = "button";
+    loadButton.setAttribute("data-speech-field", "load-profiles");
     loadButton.textContent = this.profiles.status === "loading" ? "Loading profiles…" : "Load profiles";
     loadButton.disabled = this.profiles.status === "loading";
     const loadStatus = document.createElement("small");
@@ -278,12 +330,14 @@ export class SpeechSettingsSection {
       "Narrator voice",
       "Used for narration paragraphs. When not set, the character default is tried; otherwise narration stays silent with a hint.",
       settings.narrator,
+      "narrator",
       (next, ref) => { next.narrator = ref; },
     );
     const fallback = this.voiceRefEditor(
       "Character default voice",
       "Used for any speaking character without an override below.",
       settings.characterDefault,
+      "character-default",
       (next, ref) => { next.characterDefault = ref; },
     );
 
@@ -293,7 +347,7 @@ export class SpeechSettingsSection {
     overridesLegend.textContent = "Character voices (this chat)";
     overrides.appendChild(overridesLegend);
     const overridesHelp = document.createElement("small");
-    const chatId = this.options.getChatId();
+    const chatId = currentChatId;
     overridesHelp.textContent = chatId
       ? "Overrides are matched by the speaker name shown on the nameplate and apply to this chat only, so the same name in another chat keeps its own voice. A paragraph mixing narration and dialogue is spoken with one voice."
       : "Open a chat first to add character overrides (they are scoped per chat).";
@@ -309,7 +363,7 @@ export class SpeechSettingsSection {
         name.type = "text";
         name.value = key.slice(prefix.length);
         name.disabled = true;
-        const select = this.profileSelect(ref, (nextRef) => this.save((next) => {
+        const select = this.profileSelect(ref, `override-profile-${key}`, (nextRef) => this.save((next) => {
           if (nextRef) next.characters[key] = nextRef;
           else delete next.characters[key];
         }));
@@ -319,7 +373,7 @@ export class SpeechSettingsSection {
         remove.addEventListener("click", () => this.save((next) => { delete next.characters[key]; }));
         row.append(name, select, remove);
         overrides.appendChild(row);
-        overrides.appendChild(this.voiceField(ref, (nextRef) => this.save((next) => { next.characters[key] = nextRef; })));
+        overrides.appendChild(this.voiceField(ref, `override-voice-${key}`, (nextRef) => this.save((next) => { next.characters[key] = nextRef; })));
       }
       for (const key of [...this.pendingOverrideNames].sort()) {
         if (!key.startsWith(prefix) || settings.characters[key]) continue;
@@ -330,7 +384,7 @@ export class SpeechSettingsSection {
         name.type = "text";
         name.value = key.slice(prefix.length);
         name.disabled = true;
-        const select = this.profileSelect(null, (nextRef) => {
+        const select = this.profileSelect(null, `draft-profile-${key}`, (nextRef) => {
           // Nothing is saved until a real profile is chosen; picking
           // "Not set" keeps the draft on screen.
           if (!nextRef) return;
@@ -351,20 +405,37 @@ export class SpeechSettingsSection {
       addRow.className = "row";
       const addName = document.createElement("input");
       addName.type = "text";
+      addName.setAttribute("data-speech-field", "add-character-name");
       addName.placeholder = "Character name (as shown on the nameplate)";
+      addName.value = this.draftAddName;
+      addName.addEventListener("input", () => {
+        this.draftAddName = addName.value;
+      });
       const addButton = document.createElement("button");
       addButton.type = "button";
+      addButton.setAttribute("data-speech-field", "add-character-button");
       addButton.textContent = "Add";
-      addButton.addEventListener("click", () => {
-        const name = addName.value.trim();
+
+      const commitAdd = () => {
+        const name = (this.draftAddName || addName.value).trim();
         if (!name || !speakerNameKey(name)) return;
         const key = characterOverrideKey(chatId, name);
         if (settings.characters[key] || this.pendingOverrideNames.has(key)) return;
         // Local draft only: saving an empty profile id would be dropped by
         // the config normalizer and the row would vanish on the save echo.
         this.pendingOverrideNames.add(key);
+        this.draftAddName = "";
         this.render();
+      };
+
+      addName.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          commitAdd();
+        }
       });
+      addButton.addEventListener("click", commitAdd);
+
       const spacer = document.createElement("span");
       addRow.append(addName, spacer, addButton);
       overrides.appendChild(addRow);
@@ -377,6 +448,7 @@ export class SpeechSettingsSection {
     const deliveryHelp = document.createElement("small");
     deliveryHelp.textContent = "“Gemini audio tags” prepends one inline tag like [whispers] to the SPOKEN text only (the visible prose never changes). This follows Google’s Gemini speech-generation guide; it is probabilistic guidance for Gemini-family TTS models routed through your profile, has no exhaustive supported list, and other providers may read the bracket text aloud. Cue never makes extra LLM calls to pick emotions — you choose the tag.";
     const modeSelect = document.createElement("select");
+    modeSelect.setAttribute("data-speech-field", "delivery-mode");
     for (const [value, label] of [["none", "None — send the prose unchanged (default)"], ["gemini-audio-tags", "Gemini audio tags — prepend a chosen [tag]"]] as const) {
       const option = document.createElement("option");
       option.value = value;
@@ -390,6 +462,7 @@ export class SpeechSettingsSection {
     tagTitle.textContent = "Tag (without brackets)";
     const tagInput = document.createElement("input");
     tagInput.type = "text";
+    tagInput.setAttribute("data-speech-field", "delivery-tag");
     tagInput.placeholder = "e.g. whispers — empty sends no tag";
     tagInput.value = settings.deliveryTag;
     const tagListId = "gemini-tags";
@@ -401,6 +474,9 @@ export class SpeechSettingsSection {
       tagList.appendChild(option);
     }
     tagInput.setAttribute("list", tagListId);
+    tagInput.addEventListener("input", () => {
+      this.settings.deliveryTag = tagInput.value;
+    });
     tagInput.addEventListener("change", () => this.save((next) => { next.deliveryTag = tagInput.value.trim(); }));
     tagLabel.append(tagTitle, tagInput, tagList);
     tagLabel.hidden = settings.deliveryMode !== "gemini-audio-tags";
@@ -408,6 +484,7 @@ export class SpeechSettingsSection {
     compat.className = "check";
     const compatInput = document.createElement("input");
     compatInput.type = "checkbox";
+    compatInput.setAttribute("data-speech-field", "delivery-compat");
     compatInput.checked = settings.deliveryAllProviders;
     compatInput.addEventListener("change", () => this.save((next) => { next.deliveryAllProviders = compatInput.checked; }));
     const compatText = document.createElement("span");
@@ -421,6 +498,7 @@ export class SpeechSettingsSection {
     autoplay.className = "check";
     const autoplayInput = document.createElement("input");
     autoplayInput.type = "checkbox";
+    autoplayInput.setAttribute("data-speech-field", "autoplay");
     autoplayInput.checked = settings.autoplay;
     autoplayInput.addEventListener("change", () => this.save((next) => { next.autoplay = autoplayInput.checked; }));
     const autoplayText = document.createElement("span");
@@ -432,6 +510,7 @@ export class SpeechSettingsSection {
     volumeTitle.textContent = `Speech volume (${Math.round(settings.volume * 100)}%)`;
     const volumeInput = document.createElement("input");
     volumeInput.type = "range";
+    volumeInput.setAttribute("data-speech-field", "volume");
     volumeInput.min = "0";
     volumeInput.max = "1";
     volumeInput.step = "0.05";
@@ -442,5 +521,18 @@ export class SpeechSettingsSection {
     body.append(enable, overlap, loadRow, narrator, fallback, overrides, delivery, autoplay, volume);
     details.append(summary, body);
     this.shadow.replaceChildren(style, details);
+
+    // Restore focus and text selection if an input had active focus
+    if (activeField) {
+      const restored = this.shadow.querySelector(`[data-speech-field="${activeField}"]`) as HTMLElement | null;
+      if (restored) {
+        restored.focus();
+        if ((restored instanceof HTMLInputElement || restored instanceof HTMLTextAreaElement) && selectionStart !== null && selectionEnd !== null) {
+          try {
+            restored.setSelectionRange(selectionStart, selectionEnd);
+          } catch { /* ignored */ }
+        }
+      }
+    }
   }
 }

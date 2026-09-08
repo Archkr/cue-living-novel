@@ -15,18 +15,31 @@ export type SpeechDockOptions = {
 };
 
 const DOCK_CSS = `
-/* Top-center pill: never overlaps the bottom dialogue box, the reading
-   controls (Next/Previous/Skip live on the dialogue), or the bottom gesture
-   bar. Top offset respects the notch/safe-area inset. */
-:host { position: absolute; top: max(0.75rem, env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); z-index: 40; max-width: calc(100% - 9rem); font: 13px/1.4 var(--lumiverse-font-family, system-ui, sans-serif); }
+/* Top pill: positioned to the left of the exit button on narrow screens, or centered when ample space exists.
+   Never overlaps the bottom dialogue box, the reading controls (Next/Previous/Skip live on the dialogue),
+   or the top-right exit button. Top offset respects the notch/safe-area inset. */
+:host {
+  position: absolute;
+  top: max(0.75rem, env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 40;
+  max-width: calc(100% - 9rem);
+  font: 13px/1.4 var(--lumiverse-font-family, system-ui, sans-serif);
+}
 [data-dock] { display: flex; align-items: center; gap: .45rem; padding: .35rem .6rem; border-radius: 999px; border: 1px solid var(--lumiverse-border, rgba(255,255,255,.25)); background: rgba(10, 10, 18, .78); color: var(--lumiverse-text, #f5f5f7); backdrop-filter: blur(6px); max-width: 100%; }
 button { min-width: 2rem; min-height: 2rem; flex: none; border-radius: 999px; border: 1px solid var(--lumiverse-border, rgba(255,255,255,.25)); background: var(--lumiverse-fill-medium, rgba(255,255,255,.12)); color: inherit; font: inherit; cursor: pointer; }
 button:disabled { opacity: .5; cursor: default; }
 [data-status] { max-width: 16rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--lumiverse-text-muted, rgba(255,255,255,.72)); }
 [data-status][data-tone="error"] { color: var(--lumiverse-danger, #ff8ca0); white-space: normal; }
 @media (max-width: 640px) {
-  :host { max-width: calc(100% - 8rem); }
-  [data-status] { max-width: 7rem; }
+  :host {
+    left: auto;
+    right: calc(max(0.75rem, env(safe-area-inset-right)) + 7.5rem);
+    transform: none;
+    max-width: calc(100% - 8.5rem);
+  }
+  [data-status] { max-width: 6.5rem; }
 }
 `;
 

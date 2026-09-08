@@ -115,6 +115,8 @@ export interface VnStageOptions extends VnStageCallbacks {
   textSpeed?: number;
   autoPlayDelay?: number;
   skipMode?: "read" | "all";
+  /** Optional predicate indicating an external hold on auto-play advance (e.g. speech loading/playing). */
+  isAutoAdvanceHeld?: () => boolean;
 }
 
 export interface VnSceneImageRequest {
@@ -420,6 +422,7 @@ export class VnStage {
   private textSpeed = 20;
   private autoPlayDelay = 2000;
   private skipMode: "read" | "all" = "read";
+  private readonly isAutoAdvanceHeld: (() => boolean) | undefined;
   private isAutoPlay = false;
   private isSkipping = false;
   private isBacklogOpen = false;
@@ -449,6 +452,7 @@ export class VnStage {
     this.state = options.initialState ?? createInitialVnStageState();
     this.callbacks = options;
     this.createImage = options.createImage;
+    this.isAutoAdvanceHeld = options.isAutoAdvanceHeld;
 
     this.host = document.createElement("div");
     this.host.setAttribute("data-vn-stage-host", "");
@@ -1652,12 +1656,19 @@ export class VnStage {
       bar.style.transition = "none";
       bar.style.strokeDashoffset = String(circumference);
       // Wait for next animation frame so the browser commits the full circumference before animating to 0
-      requestAnimationFrame(() => {
+      if (typeof requestAnimationFrame === "function") {
+        requestAnimationFrame(() => {
+          if (!this.destroyed && this.isAutoPlay && bar) {
+            bar.style.transition = `stroke-dashoffset ${delayMs}ms linear`;
+            bar.style.strokeDashoffset = "0";
+          }
+        });
+      } else {
         if (!this.destroyed && this.isAutoPlay && bar) {
           bar.style.transition = `stroke-dashoffset ${delayMs}ms linear`;
           bar.style.strokeDashoffset = "0";
         }
-      });
+      }
     }
 
     this.autoPlayTimer = setTimeout(() => {
@@ -1709,11 +1720,40 @@ export class VnStage {
     } else if (this.isAutoPlay) {
       const view = selectVnStageView(this.state);
       if (view.canAdvance) {
+        if (this.isAutoAdvanceHeld?.()) {
+          this.resetAutoRing();
+          return;
+        }
         this.startAutoCountdown(this.autoPlayDelay);
       } else {
         this.resetAutoRing();
       }
     }
+  }
+
+  /**
+   * Re-evaluates the auto-play countdown. Call this when an external hold (such as
+   * speech playback or synthesis) releases or transitions. If auto-play is active,
+   * text typing is done, and no hold remains, starts the auto-play countdown.
+   */
+  checkAutoPlay(): void {
+    if (this.destroyed || !this.isAutoPlay || this.isTyping || this.isSkipping) return;
+    const view = selectVnStageView(this.state);
+    if (!view.canAdvance) return;
+    if (this.isAutoAdvanceHeld?.()) {
+      this.clearAutoPlayTimer();
+      return;
+    }
+    this.startAutoCountdown(this.autoPlayDelay);
+  }
+
+  /**
+   * Immediately clears any active auto-play advance timer (e.g. speech began
+   * loading or playing while the countdown was active, or speech was paused).
+   */
+  holdAutoPlay(): void {
+    if (this.destroyed) return;
+    this.clearAutoPlayTimer();
   }
 
   private scheduleSkipAdvance(): void {
