@@ -254,7 +254,10 @@ describe("card sprite reference source", () => {
 
   test("an inline tag picks the sprite for the tagged paragraph's character", async () => {
     const runtime = cardRuntime("comfyui", { kind: "reply" }, 'Paragraph 0.\n<pimg="aurelia_smirking">\n\nParagraph 1.');
-    await run(runtime, plan([cue("a", 0, "Aurelia")]));
+    const p = plan([cue("a", 0, "Aurelia")]);
+    await generateAssets(runtime.spindle, p, createAssetJobs(p, cardConfig), cardConfig,
+      new AbortController().signal, () => {}, undefined,
+      { resolvedSourceText: 'Paragraph 0.\n<pimg="aurelia_smirking">\n\nParagraph 1.' });
     const portraits = await loadPortraits(runtime.spindle, "chat");
     expect(portraits[cardPortraitKey("aurelia")]?.assetName).toBe("aurelia_smirking");
   });
@@ -382,4 +385,58 @@ describe("card portrait storage keys", () => {
     expect(portraits.mira?.imageId).toBe("img-1");
     expect(portraits[cardPortraitKey("mira")]?.imageId).toBe("id-1");
   });
+});
+
+
+describe("review regressions: exact text and cancellation", () => {
+  test("card reference uses the exact resolved source, never a discarded branch or current swipe", async () => {
+    const runtime = cardRuntime("comfyui", { kind: "reply" }, 'Discarded branch.\n<pimg="aurelia_evil smile">');
+    const p = plan([cue("a", 0, "Aurelia")]);
+    await generateAssets(runtime.spindle, p, createAssetJobs(p, cardConfig), cardConfig,
+      new AbortController().signal, () => {}, undefined,
+      { resolvedSourceText: 'Paragraph 0.\n<pimg="aurelia_smirking">' });
+    expect(runtime.fetches[0]?.imageId).toBe("id-003");
+  });
+
+  test("legacy plan without exact source skips raw inline tags", async () => {
+    const runtime = cardRuntime("comfyui", { kind: "reply" }, 'Discarded branch.\n<pimg="aurelia_evil smile">');
+    await run(runtime, plan([cue("a", 0, "Aurelia")]));
+    expect(runtime.fetches[0]?.imageId).toBe("id-000");
+  });
+
+  test("closing during the reference relay never invokes the provider", async () => {
+    const runtime = cardRuntime("comfyui", { kind: "silent" });
+    const controller = new AbortController();
+    runtime.spindle.sendToFrontend = () => { controller.abort("closed during relay"); };
+    const p = plan([cue("a", 0, "Aurelia")]);
+    const result = await generateAssets(runtime.spindle, p, createAssetJobs(p, cardConfig), cardConfig,
+      controller.signal, () => {});
+    expect(result[0]?.status).toBe("cancelled");
+    expect(runtime.calls).toHaveLength(0);
+  });
+});
+
+
+test("capture dependents do not invoke the provider after cancellation", async () => {
+  const runtime = cardRuntime("comfyui");
+  const controller = new AbortController();
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  let calls = 0;
+  runtime.spindle.imageGen.generate = async () => {
+    calls++;
+    entered();
+    await gate;
+    return { imageId: "captured", provider: "comfyui", model: "m", imageDataUrl: "data:image/png;base64,QUJD" };
+  };
+  const config = { ...capturedConfig, imageConcurrency: 2 };
+  const p = plan([cue("one", 0, "Aurelia"), cue("two", 1, "Aurelia", "sad")]);
+  const pending = generateAssets(runtime.spindle, p, createAssetJobs(p, config), config, controller.signal, () => {});
+  await started;
+  controller.abort("closed while waiting for capture");
+  release();
+  await pending;
+  expect(calls).toBe(1);
 });

@@ -1,6 +1,6 @@
 import type { SpindleFrontendContext } from "lumiverse-spindle-types";
 import type { VisualNovelConfig, VisualNovelEffectIntensity } from "../../config.js";
-import { REFERENCE_IMAGE_MAX_BYTES } from "../../protocol.js";
+import { REFERENCE_IMAGE_MAX_BYTES, REFERENCE_IMAGE_MIMES } from "../../protocol.js";
 import type { AssetView, BackendResponse, ConnectionCatalogOption, FrontendRequest, TurnView } from "../../protocol.js";
 import { AudioEngine, VnStage, isAmbientEffect, isStageEffect } from "../stage/index.js";
 import type { AmbientEffect, StageEffect } from "../store/index.js";
@@ -50,8 +50,9 @@ export async function relayReferenceFetch(
     if (!response.ok) throw new Error(`Image fetch failed (${response.status}).`);
     const blob = await response.blob();
     if (blob.size > REFERENCE_IMAGE_MAX_BYTES) throw new Error("Reference image exceeds the 8 MiB relay limit.");
+    const mimeType = blob.type.toLowerCase();
+    if (!REFERENCE_IMAGE_MIMES.has(mimeType)) throw new Error("Reference asset is not a supported image.");
     const bytes = new Uint8Array(await blob.arrayBuffer());
-    const mimeType = blob.type && blob.type.startsWith("image/") ? blob.type : "image/png";
     send({ type: "vn_reference_image", requestId: message.requestId, dataUrl: `data:${mimeType};base64,${base64FromBytes(bytes)}` });
   } catch (error) {
     send({ type: "vn_reference_image", requestId: message.requestId, error: error instanceof Error ? error.message : String(error) });

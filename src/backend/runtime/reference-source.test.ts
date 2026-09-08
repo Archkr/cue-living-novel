@@ -320,3 +320,14 @@ describe("reference image relay", () => {
     expect(handleReferenceImageResponse({ requestId: "nope", dataUrl: "data:image/png;base64,QUJD" })).toBe(false);
   });
 });
+
+
+test("unresolvable bare entries do not shadow a usable sprite variant", () => {
+  const card = { ...singleCharacterCard, extensions: { lumirealm: { asset_index: {
+    Aurelia: { ext: "png", imageIds: [] },
+    Aurelia_neutral: { imageIds: ["usable"] }
+  } } } } as unknown as CharacterDTO;
+  expect(collectCardAssetNames(card)).toEqual(["Aurelia_neutral"]);
+  const result = resolveCardAssetsForPlan({ plan: plan([cue("a", 0, "Aurelia")], ["Aurelia"]), character: card, content: "", registry: emptyRegistry });
+  expect(result.get("aurelia")?.imageId).toBe("usable");
+});

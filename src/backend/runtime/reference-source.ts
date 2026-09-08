@@ -104,7 +104,7 @@ export function collectCardAssetNames(character: CharacterDTO): string[] {
   const seen = new Set<string>();
   const push = (key: string): void => {
     const norm = normalizeAssetText(stripExtension(key));
-    if (!norm || seen.has(norm)) return;
+    if (!norm || seen.has(norm) || !resolveCharacterAssetImageId(character, key)) return;
     seen.add(norm);
     names.push(key);
   };
@@ -216,7 +216,7 @@ function assetMatchesAnyName(assetName: string, names: readonly string[]): boole
 export type ResolveCardAssetsInput = {
   plan: TurnPlan;
   character: CharacterDTO;
-  /** Raw assistant message content (inline tags intact); "" skips step 1. */
+  /** Exact resolved source used to build this plan (tags intact); "" skips step 1. */
   content: string;
   registry: CharacterRegistry;
 };
@@ -369,7 +369,7 @@ export function resolveCardAssetsForPlan(input: ResolveCardAssetsInput): Map<str
 }
 
 /* ------------------------------------------------------------------ *
- * Host lookups: the card, the raw message content, and the registry.
+ * Host lookups: the card and registry. Text must come from the accepted plan.
  * ------------------------------------------------------------------ */
 
 export type CardReferenceContext = {
@@ -389,16 +389,6 @@ async function chatCharacter(spindle: SpindleAPI, chatId: string, userId?: strin
   }
 }
 
-async function assistantMessageContent(spindle: SpindleAPI, plan: TurnPlan): Promise<string> {
-  try {
-    const messages = await spindle.chat.getMessages(plan.key.chatId) as Array<{ id?: string; content?: string }>;
-    const message = messages.find((candidate) => candidate.id === plan.key.assistantMessageId);
-    return typeof message?.content === "string" ? message.content : "";
-  } catch {
-    return "";
-  }
-}
-
 /**
  * Resolve card assets for a plan's characters. Called only when
  * `referenceSource` is "card"; any host failure yields null and the whole
@@ -407,14 +397,16 @@ async function assistantMessageContent(spindle: SpindleAPI, plan: TurnPlan): Pro
 export async function loadCardReferenceContext(
   spindle: SpindleAPI,
   plan: TurnPlan,
-  userId?: string
+  userId?: string,
+  options: { resolvedSourceText?: string } = {}
 ): Promise<CardReferenceContext | null> {
   const character = await chatCharacter(spindle, plan.key.chatId, userId);
   if (!character) return null;
-  const [content, registry] = await Promise.all([
-    assistantMessageContent(spindle, plan),
-    loadCharacterRegistry(spindle, plan.key.chatId, userId).catch(() => ({} as CharacterRegistry))
-  ]);
+  // Only the exact source which produced this plan has compatible paragraph
+  // indexes. Legacy records skip inline matching; never read a newer swipe or
+  // independently re-resolve mutable macros here.
+  const content = options.resolvedSourceText ?? "";
+  const registry = await loadCharacterRegistry(spindle, plan.key.chatId, userId).catch(() => ({} as CharacterRegistry));
   try {
     return { resolutions: resolveCardAssetsForPlan({ plan, character, content, registry }) };
   } catch {
@@ -455,7 +447,7 @@ export type ReferenceFetchOptions = {
   characterKey: string;
   userId?: string | undefined;
   timeoutMs?: number | undefined;
-  /** Abort the wait: resolves null at once and never persists afterwards. */
+  /** Abort the wait: resolves null at once. This function never persists data. */
   signal?: AbortSignal | undefined;
 };
 
