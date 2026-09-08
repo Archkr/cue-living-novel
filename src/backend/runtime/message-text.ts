@@ -28,6 +28,82 @@ function keepToken(token: string): boolean {
   return KEEP_IMG.test(token) || KEEP_DISPLAY.test(token);
 }
 
+/**
+ * Host macros whose output changes between calls with identical input
+ * (`volatile: true` in the Lumiverse registry: time, randomness, idle
+ * duration, counters, shuffles). The host does not report volatility to
+ * extensions, so the selection fingerprint masks these tokens before the
+ * dry resolve; the planning text still resolves them for real.
+ */
+export const VOLATILE_MACROS: ReadonlySet<string> = new Set([
+  "randomtag", "random_tag", "randomchartag",
+  "time", "date", "weekday", "isotime", "isodate", "datetimeformat",
+  "idleduration", "idle_duration", "timediff", "time_diff",
+  "random", "pick", "roll", "randomlumia", "chatage", "chat_age",
+  "counter", "toggle", "rcounter", "shuffle",
+  "foreachvar", "for_each_var", "foreachchatvar", "for_each_chat_var",
+  "foreachglobalvar", "foreachgvar", "for_each_global_var"
+].map((name) => name.toLowerCase()));
+
+/**
+ * Mask delimiter: U+2062 INVISIBLE TIMES (format char, not whitespace, never
+ * produced by macros). Any literal occurrence in the stored text is dropped
+ * first so a placeholder can never collide with user content.
+ */
+const MASK = "\u2062";
+const MASK_PATTERN = /\u2062(\d+)\u2062/g;
+
+/** Macro name of a `{{...}}` token: the first segment before `::`, `:`, whitespace or `}}`. */
+function macroName(token: string): string {
+  const inner = token.slice(2, -2).trim();
+  const match = /^([A-Za-z_][\w-]*)/.exec(inner);
+  return match ? match[1]!.toLowerCase() : "";
+}
+
+export type MaskedTemplate = { template: string; tokens: string[] };
+
+/**
+ * Replace every depth-0 volatile token with an indexed placeholder
+ * (`\u2062N\u2062`) and return the tokens in order. Tokens nested inside
+ * another token (a `{{#when::{{random::..}}}}` header) are left alone: they
+ * drive the selection itself and must reach the host in the ONE call that
+ * chooses the branch. `tokens` is empty when nothing was masked.
+ */
+export function maskVolatileMacros(text: string): MaskedTemplate {
+  const source = text.includes(MASK) ? text.split(MASK).join("") : text;
+  if (!source.includes("{{")) return { template: source, tokens: [] };
+  const tokens: string[] = [];
+  let output = "";
+  let cursor = 0;
+  while (cursor < source.length) {
+    const start = source.indexOf("{{", cursor);
+    if (start < 0) break;
+    const end = tokenEnd(source, start);
+    if (end < 0) break;
+    const token = source.slice(start, end);
+    output += source.slice(cursor, start);
+    if (VOLATILE_MACROS.has(macroName(token))) {
+      output += `${MASK}${tokens.length}${MASK}`;
+      tokens.push(token);
+    } else {
+      output += token;
+    }
+    cursor = end;
+  }
+  if (tokens.length === 0) return { template: source, tokens: [] };
+  return { template: output + source.slice(cursor), tokens };
+}
+
+/** Selection form of a masked resolution: every placeholder collapses to one stable mark. */
+function collapseMasks(text: string): string {
+  return text.replace(MASK_PATTERN, MASK);
+}
+
+/** Planning form: each surviving placeholder is replaced by its resolved token value. */
+function fillMasks(text: string, values: readonly string[]): string {
+  return text.replace(MASK_PATTERN, (_match, index: string) => values[Number(index)] ?? "");
+}
+
 /** True when the text contains macro syntax the host may be able to resolve. */
 function hasMacroSyntax(text: string): boolean {
   return text.replace(/\{\{\s*img\s*::[^{}]*\}\}/gi, "").includes("{{");
@@ -207,17 +283,74 @@ export async function resolveMessageText(
   content: string,
   userId?: string
 ): Promise<string> {
-  if (!needsResolution(content)) return content;
-  let text = content;
-  if (hasMacroSyntax(content) && typeof spindle.macros?.resolve === "function") {
-    try {
-      const result = await spindle.macros.resolve(content, { chatId, ...(userId ? { userId } : {}), commit: false });
-      if (typeof result?.text === "string") text = result.text;
-    } catch {
-      text = content;
-    }
+  return (await resolveMessageIntake(spindle, chatId, content, userId)).text;
+}
+
+/**
+ * Result of one message intake resolution.
+ *
+ * - `text`: the exact narrative the planner, the stored turn and the frontend
+ *   use (host-resolved, then cleaned).
+ * - `selectionText`: the same resolution with depth-0 volatile macros masked
+ *   before the host saw them. Fingerprint THIS, never `text`: `{{random}}`
+ *   or `{{time}}` output changes on every dry resolve, while a scene
+ *   selection change still changes `selectionText`.
+ * - `resolved`: false when the host could not resolve the message (no macros
+ *   API, the call threw, or `{{#...}}` blocks survived the resolve, e.g. the
+ *   card's interceptor extension is not loaded). A stored turn for the same
+ *   message must then be kept instead of replanned or replaced by a waiting
+ *   state.
+ */
+export type MessageIntake = { text: string; selectionText: string; resolved: boolean };
+
+async function hostResolve(spindle: SpindleAPI, chatId: string, template: string, userId?: string): Promise<string | null> {
+  if (typeof spindle.macros?.resolve !== "function") return null;
+  try {
+    const result = await spindle.macros.resolve(template, { chatId, ...(userId ? { userId } : {}), commit: false });
+    return typeof result?.text === "string" ? result.text : null;
+  } catch {
+    return null;
   }
-  return cleanResolvedText(text);
+}
+
+export async function resolveMessageIntake(
+  spindle: SpindleAPI,
+  chatId: string,
+  content: string,
+  userId?: string
+): Promise<MessageIntake> {
+  if (!needsResolution(content)) return { text: content, selectionText: content, resolved: true };
+  if (!hasMacroSyntax(content)) {
+    // Placeholder line only: nothing for the host to do.
+    const cleaned = cleanResolvedText(content);
+    return { text: cleaned, selectionText: cleaned, resolved: true };
+  }
+  // Volatile tokens are masked BEFORE the host sees the template, so the
+  // branch selection happens in exactly one host call and the planning text
+  // and the selection text always describe the same scene. The masked
+  // tokens are then resolved on their own to fill the planning text in.
+  const masked = maskVolatileMacros(content);
+  const hostText = await hostResolve(spindle, chatId, masked.template, userId);
+  // A resolve that leaves block syntax behind did not evaluate the card's
+  // selection (no interceptor); treat it like an unavailable host.
+  const resolved = hostText !== null && !hasMacroBlocks(hostText);
+  const base = hostText ?? masked.template;
+  if (masked.tokens.length === 0) {
+    const text = cleanResolvedText(base);
+    return { text, selectionText: text, resolved };
+  }
+  const values = await Promise.all(masked.tokens.map(async (token, index) => {
+    // Only tokens that survived (sit in the selected branch) need a value.
+    if (!base.includes(`${MASK}${index}${MASK}`)) return "";
+    const value = resolved ? await hostResolve(spindle, chatId, token, userId) : null;
+    // An unresolvable volatile token is dropped like any other leftover macro.
+    return value !== null && !value.includes("{{") ? value : "";
+  }));
+  return {
+    text: cleanResolvedText(fillMasks(base, values)),
+    selectionText: cleanResolvedText(collapseMasks(base)),
+    resolved
+  };
 }
 
 /** Per-planning-run resolution cache, keyed by message id + swipe. */

@@ -486,6 +486,13 @@ describe("viewStateMessages (view announcement on boot, reconnect, activate, cha
   test("re-announcing after a reconnect is idempotent (same messages every time)", () => {
     expect(viewStateMessages("chat-1", true)).toEqual(viewStateMessages("chat-1", true));
   });
+
+  test("the boot request says nothing about the view: no vn_view, no viewOpen (a reload must not abort a batch autoEnter is about to reopen)", () => {
+    const messages = viewStateMessages("chat-1", undefined);
+    expect(messages).toEqual([{ type: "vn_get_state", chatId: "chat-1" }]);
+    expect(messages.some((message) => message.type === "vn_view")).toBe(false);
+    expect("viewOpen" in messages[0]!).toBe(false);
+  });
 });
 
 describe("relayReferenceFetch (card reference data relay)", () => {
