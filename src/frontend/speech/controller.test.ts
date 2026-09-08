@@ -676,4 +676,62 @@ describe("audit remediation (must-fix 11-13, findings 5/14)", () => {
     await tick();
     expect(audio.src).toBe("");
   });
+
+  test("prefetches the next paragraph while current is playing and reuses it on advance", async () => {
+    const { transport, controller } = rig();
+    const p1 = cursor({ paragraphIndex: 1, text: "Second paragraph." });
+    const p0 = cursor({ paragraphIndex: 0, text: "First paragraph.", next: p1 });
+
+    controller.setCursor(p0);
+    const playDone = controller.playCurrent();
+    await tick();
+
+    // Paragraph 0 is requesting synthesis
+    expect(transport.requests.length).toBe(1);
+    expect(transport.requests[0]!.input.text).toBe("First paragraph.");
+    transport.requests[0]!.resolve(audioBlob());
+    await playDone;
+    await tick();
+
+    // Now paragraph 0 is playing, which automatically dispatched background prefetch for paragraph 1!
+    expect(transport.requests.length).toBe(2);
+    expect(transport.requests[1]!.input.text).toBe("Second paragraph.");
+    // Complete the prefetch
+    transport.requests[1]!.resolve(audioBlob(10));
+    await tick();
+
+    // Now user or auto mode advances to paragraph 1:
+    controller.setCursor(p1);
+    // When playing paragraph 1, it hits the cache: NO NEW synthesis requests!
+    const play1 = controller.playCurrent();
+    await play1;
+    await tick();
+
+    // Still exactly 2 requests in total (p0 and p1 prefetch):
+    expect(transport.requests.length).toBe(2);
+    expect(controller.getStatus().kind).toBe("playing");
+  });
+
+  test("stopping or jumping cancels in-flight prefetch", async () => {
+    const { transport, controller } = rig();
+    const p1 = cursor({ paragraphIndex: 1, text: "Second paragraph." });
+    const p0 = cursor({ paragraphIndex: 0, text: "First paragraph.", next: p1 });
+
+    controller.setCursor(p0);
+    const playDone = controller.playCurrent();
+    await tick();
+    transport.requests[0]!.resolve(audioBlob());
+    await playDone;
+    await tick();
+
+    // Prefetch for p1 is in flight
+    expect(transport.requests.length).toBe(2);
+    const prefetchReq = transport.requests[1]!;
+    expect(prefetchReq.signal.aborted).toBe(false);
+
+    // User stops playback
+    controller.stop("user-stop");
+    expect(prefetchReq.signal.aborted).toBe(true);
+  });
+
 });

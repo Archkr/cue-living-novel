@@ -44,4 +44,19 @@ describe("speechCursorFor", () => {
     expect(speechCursorFor(turn(), 5)).toBeNull();
     expect(speechCursorFor(turn({ paragraphs: [] }), 0)).toBeNull();
   });
+
+  test("generates 1-level lookahead next cursor for upcoming paragraph", () => {
+    const view = turn({ paragraphs: ["p0", "p1", "p2"] });
+    const c0 = speechCursorFor(view, 0)!;
+    expect(c0.paragraphIndex).toBe(0);
+    expect(c0.next?.paragraphIndex).toBe(1);
+    expect(c0.next?.text).toBe("p1");
+    // Next cursor itself has next: null (strictly 1-level)
+    expect(c0.next?.next).toBeNull();
+
+    const c2 = speechCursorFor(view, 2)!;
+    expect(c2.paragraphIndex).toBe(2);
+    expect(c2.next).toBeNull();
+  });
+
 });

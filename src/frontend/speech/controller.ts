@@ -12,7 +12,7 @@ import { SpeechTransportError, type TtsTransport } from "./transport.js";
  *   ever issued, no matter how many state updates arrive;
  * - one voice per whole paragraph (paragraph speaker metadata is name-level
  *   only; mixed narration/dialogue inside one paragraph is a documented limit);
- * - at most one in-flight synthesis request; no automatic retries; no prefetch;
+ * - bounded 1-paragraph lookahead: while actively playing, prefetches the next paragraph;
  * - every boundary (cursor change, chat change, deactivate, hidden page,
  *   settings change, disposal) bumps the epoch, aborts the in-flight request,
  *   and drops any late completion — a stale response never plays and is never
@@ -31,6 +31,7 @@ export type SpeechCursor = {
   /** Raw paragraph attribution: "" narrator, name, or null/undefined = unknown. */
   paragraphSpeaker: string | null | undefined;
   turnSpeaker: string;
+  next?: SpeechCursor | null;
 };
 
 export type SpeechStatus =
@@ -94,6 +95,8 @@ export class SpeechController {
   /** Any boundary bump invalidates in-flight work and late completions. */
   private epoch = 0;
   private inflight: AbortController | null = null;
+  /** Background lookahead controller for the next paragraph. */
+  private prefetchAbort: AbortController | null = null;
   /** Session LRU: cache key -> revocable object URL. Never stores failures. */
   private readonly cache = new Map<string, { url: string; bytes: number }>();
   private cacheBytes = 0;
@@ -387,8 +390,17 @@ export class SpeechController {
     this.publish(this.eligible() ? { kind: "idle", ...this.speakerLabel() } : { kind: "off" });
   }
 
+  private abortPrefetch(): void {
+    if (this.prefetchAbort) {
+      const controller = this.prefetchAbort;
+      this.prefetchAbort = null;
+      controller.abort("prefetch-cancelled");
+    }
+  }
+
   private abortInflight(reason: string): void {
     this.epoch += 1;
+    this.abortPrefetch();
     if (this.inflight) {
       const controller = this.inflight;
       this.inflight = null;
@@ -463,6 +475,7 @@ export class SpeechController {
     if (!auto) this.gestureUnlocked = true;
     this.playState = "playing";
     this.publish({ kind: "playing", ...this.speakerLabel() });
+    this.schedulePrefetch();
   }
 
   /**
@@ -471,6 +484,71 @@ export class SpeechController {
    * oversized entry is kept over the byte cap so its URL stays valid for the
    * element. Everything removed here is revoked exactly once.
    */
+  /**
+   * Prefetches the upcoming paragraph in the background while the current one is
+   * playing. Silently stores the synthesized audio in the session LRU cache so
+   * advancing to the next paragraph starts immediately with zero delay.
+   */
+  private schedulePrefetch(): void {
+    if (this.disposed || !this.active || !this.visible || !this.settings.enabled) return;
+    const next = this.cursor?.next;
+    if (!next || !next.text.trim()) return;
+
+    this.abortPrefetch();
+    const abort = new AbortController();
+    this.prefetchAbort = abort;
+
+    void (async () => {
+      try {
+        const resolved = resolveVoiceForParagraph(this.settings, {
+          chatId: next.chatId,
+          paragraphSpeaker: next.paragraphSpeaker,
+          turnSpeaker: next.turnSpeaker,
+        });
+        if (!resolved.ref || abort.signal.aborted) return;
+
+        const snapshot = await this.transport.getProfile(resolved.ref.connectionId, abort.signal);
+        if (abort.signal.aborted) return;
+
+        const tagAllowed = deliveryTagAllowedForModel(
+          this.settings.deliveryMode,
+          snapshot.model,
+          this.settings.deliveryAllProviders,
+        );
+        const outbound = tagAllowed
+          ? formatOutboundText(next.text, this.settings.deliveryMode, this.settings.deliveryTag)
+          : next.text;
+        const effectiveVoice = resolved.ref.voice || snapshot.voice;
+        const key = [
+          "v" + DELIVERY_ADAPTER_VERSION,
+          resolved.ref.connectionId,
+          snapshot.updatedAt,
+          snapshot.model,
+          effectiveVoice,
+          resolved.ref.parameters?.speed ?? "",
+          snapshot.parametersFingerprint,
+          outbound,
+        ].join("\u0000");
+
+        if (this.cache.has(key) || abort.signal.aborted) return;
+
+        const blob = await this.transport.synthesize({ ref: resolved.ref, text: outbound }, abort.signal);
+        if (abort.signal.aborted || blob.size === 0 || this.disposed) return;
+
+        const url = this.createObjectUrl(blob);
+        this.cache.set(key, { url, bytes: blob.size });
+        this.cacheBytes += blob.size;
+        this.evictOverflow(key);
+      } catch {
+        // Prefetch failures are non-blocking and silent
+      } finally {
+        if (this.prefetchAbort === abort) {
+          this.prefetchAbort = null;
+        }
+      }
+    })();
+  }
+
   private evictOverflow(protectKey?: string): void {
     while (this.cache.size > this.maxCacheItems || this.cacheBytes > this.maxCacheBytes) {
       const oldestEvictable = (): string | undefined => {
@@ -506,6 +584,7 @@ export class SpeechController {
   private pendingRevoke: string[] = [];
 
   private clearCache(): void {
+    this.abortPrefetch();
     for (const entry of this.cache.values()) this.revokeObjectUrl(entry.url);
     this.cache.clear();
     this.cacheBytes = 0;

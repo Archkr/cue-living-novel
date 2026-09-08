@@ -170,7 +170,7 @@ export function nameplateForParagraph(view: TurnView, index: number): string {
  * resolution can mirror the nameplate exactly. Returns null for missing
  * paragraphs so planning/error states never produce a speakable cursor.
  */
-export function speechCursorFor(view: TurnView, index: number): SpeechCursor | null {
+export function speechCursorFor(view: TurnView, index: number, includeNext = true): SpeechCursor | null {
   const text = view.paragraphs[index];
   if (typeof text !== "string") return null;
   return {
@@ -181,6 +181,7 @@ export function speechCursorFor(view: TurnView, index: number): SpeechCursor | n
     text,
     paragraphSpeaker: view.paragraphSpeakers?.[index],
     turnSpeaker: view.speaker,
+    next: includeNext ? speechCursorFor(view, index + 1, false) : null,
   };
 }
 
