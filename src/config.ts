@@ -14,6 +14,15 @@ export type VisualNovelSceneImageFit = (typeof SCENE_IMAGE_FITS)[number];
 export const EFFECT_INTENSITIES = ["off", "gentle", "full"] as const;
 export type VisualNovelEffectIntensity = (typeof EFFECT_INTENSITIES)[number];
 
+/**
+ * Where a character's reference anchor image comes from.
+ * - "captured": the first render of the character in the chat (the default, unchanged behaviour);
+ * - "card": one fixed sprite per character resolved from the card's assets. Characters the card
+ *   does not know still use captured renders.
+ */
+export const REFERENCE_SOURCES = ["captured", "card"] as const;
+export type VisualNovelReferenceSource = (typeof REFERENCE_SOURCES)[number];
+
 /** Dialogue text scale bounds (multiplier over the theme's dialogue font size). */
 export const TEXT_SCALE_MIN = 0.8;
 export const TEXT_SCALE_MAX = 1.6;
@@ -56,6 +65,8 @@ export type VisualNovelConfig = {
   generateImages: boolean;
   /** Anchor each character's appearance to their captured reference portrait. */
   referenceAnchoring: boolean;
+  /** Where the reference anchor image comes from ("captured" render or "card" sprite). */
+  referenceSource: VisualNovelReferenceSource;
   generateChoices: boolean;
   parserConnectionId: string | null;
   parserParameters: Record<string, unknown>;
@@ -102,6 +113,7 @@ export const DEFAULT_CONFIG: VisualNovelConfig = {
   debugLogging: false,
   generateImages: true,
   referenceAnchoring: true,
+  referenceSource: "captured",
   generateChoices: true,
   parserConnectionId: null,
   parserParameters: {},
@@ -191,6 +203,12 @@ function promptPresetList(value: unknown): VisualNovelPromptPreset[] {
   return presets;
 }
 
+function referenceSource(value: unknown): VisualNovelReferenceSource {
+  return typeof value === "string" && (REFERENCE_SOURCES as readonly string[]).includes(value)
+    ? value as VisualNovelReferenceSource
+    : DEFAULT_CONFIG.referenceSource;
+}
+
 function effectIntensity(value: unknown): VisualNovelEffectIntensity {
   return typeof value === "string" && (EFFECT_INTENSITIES as readonly string[]).includes(value)
     ? value as VisualNovelEffectIntensity
@@ -234,6 +252,7 @@ export function normalizeConfig(value: unknown): VisualNovelConfig {
     debugLogging: bool(input.debugLogging, DEFAULT_CONFIG.debugLogging),
     generateImages: bool(input.generateImages, DEFAULT_CONFIG.generateImages),
     referenceAnchoring: bool(input.referenceAnchoring, DEFAULT_CONFIG.referenceAnchoring),
+    referenceSource: referenceSource(input.referenceSource),
     generateChoices: bool(input.generateChoices, DEFAULT_CONFIG.generateChoices),
     parserConnectionId: nullableString(input.parserConnectionId),
     parserParameters: record(input.parserParameters),

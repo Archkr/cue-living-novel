@@ -1,0 +1,36 @@
+{
+  "name": "Sex Sex Fantasy",
+  "image_id": "img-card-avatar",
+  "extensions": {
+    "risu_asset_map": {
+      "Aurelia": "id-000",
+      "aurelia_neutral": "id-001",
+      "aurelia_happy": "id-002",
+      "aurelia_smirking": "id-003",
+      "aurelia_evil smile": "id-004",
+      "aurelia_smile": "id-005",
+      "Clarisse": "id-006",
+      "clarisse_neutral": "id-007",
+      "clarisse_smirking": "id-008",
+      "elizabeth": "id-009",
+      "elizabeth_neutral": "id-010",
+      "elizabeth_smirking": "id-011",
+      "elizabeth_evil smile": "id-012",
+      "elizabeth2_smug": "id-013",
+      "beatrice": "id-014",
+      "beatrice_neutral": "id-015",
+      "karryn": "id-016",
+      "karryn_neutral": "id-017",
+      "manes": "id-018",
+      "manes_neutral": "id-019",
+      "Brunhild": "id-020",
+      "Alicia": "id-021",
+      "alicia_neutral": "id-022",
+      "mob_guild_receptionist": "id-023",
+      "pandora": "id-024",
+      "valeria": "id-025",
+      "victoria": "id-026",
+      "belian": "id-027"
+    }
+  }
+}

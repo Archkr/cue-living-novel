@@ -1,12 +1,14 @@
 import {
   DEFAULT_CONFIG,
   EFFECT_INTENSITIES,
+  REFERENCE_SOURCES,
   SCENE_IMAGE_FITS,
   TEXT_SCALE_MAX,
   TEXT_SCALE_MIN,
   THEME_PRESET_IDS,
   type VisualNovelConfig,
   type VisualNovelEffectIntensity,
+  type VisualNovelReferenceSource,
   type VisualNovelSceneImageFit,
   type VisualNovelThemePreset,
 } from "../../config.js";
@@ -37,6 +39,21 @@ export function imageSourcePatch(source: ImageSource): Partial<Pick<VisualNovelC
     case "generated": return { useNativeCardImages: false, generateImages: true };
     case "text": return { useNativeCardImages: false, generateImages: false };
   }
+}
+
+/* ------------------------------------------------------------------------ */
+/* Reference image source (shown only while the reference toggle is on).     */
+/* ------------------------------------------------------------------------ */
+
+export const REFERENCE_SOURCE_OPTIONS: ReadonlyArray<{ value: VisualNovelReferenceSource; label: string; help: string }> = [
+  { value: "captured", label: "Captured render (default)", help: "The first generated picture of each character becomes their reference." },
+  { value: "card", label: "Card sprites", help: "One fixed sprite per character from the card's assets; characters the card does not know still use captured renders." },
+];
+
+export function normalizeReferenceSource(value: string): VisualNovelReferenceSource {
+  return (REFERENCE_SOURCES as readonly string[]).includes(value)
+    ? value as VisualNovelReferenceSource
+    : DEFAULT_CONFIG.referenceSource;
 }
 
 /* ------------------------------------------------------------------------ */

@@ -50,6 +50,15 @@ test("scene image fit preserves every supported mode and rejects unknown ones", 
 });
 
 
+test("reference source defaults to captured and rejects unknown values", () => {
+  assert.equal(DEFAULT_CONFIG.referenceSource, "captured");
+  assert.equal(normalizeConfig({}).referenceSource, "captured");
+  assert.equal(normalizeConfig({ referenceSource: "card" }).referenceSource, "card");
+  assert.equal(normalizeConfig({ referenceSource: "CARD" }).referenceSource, "captured");
+  assert.equal(normalizeConfig({ referenceSource: 42 }).referenceSource, "captured");
+  assert.equal(normalizeConfig({ referenceSource: null }).referenceSource, "captured");
+});
+
 test("normalizing an empty config yields exactly the defaults (backward compatible)", () => {
   assert.deepEqual(normalizeConfig({}), DEFAULT_CONFIG);
   assert.deepEqual(normalizeConfig(undefined), DEFAULT_CONFIG);

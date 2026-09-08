@@ -634,6 +634,15 @@ export type StoredPortrait = {
   /** Source prompt used when capturing this portrait, for provenance. */
   prompt?: string;
   identityFingerprint?: string;
+  /**
+   * Where this portrait came from. Absent means "captured" (legacy records).
+   * Card portraits are stored under a `card:`-prefixed map key, so the two
+   * sources never overwrite each other and switching the setting back
+   * restores the previous anchor.
+   */
+  source?: "captured" | "card";
+  /** Card asset name this portrait was resolved from (card source only). */
+  assetName?: string;
 };
 
 export type PortraitRecord = {
@@ -716,9 +725,11 @@ export async function savePortrait(
   chatId: string,
   portrait: StoredPortrait,
   userId?: string,
-  options?: { replace?: boolean }
+  options?: { replace?: boolean; key?: string }
 ): Promise<boolean> {
-  const key = characterAppearanceKey(portrait.name);
+  // `options.key` lets card portraits live under `card:<characterKey>` while
+  // captured portraits keep the plain character key.
+  const key = options?.key?.trim() || characterAppearanceKey(portrait.name);
   if (!key || !isStoredPortrait(portrait)) return false;
   const path = portraitStatePath(chatId);
   let stored = false;

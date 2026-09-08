@@ -1,0 +1,138 @@
+{
+  "name": "Aurelia",
+  "image_id": "img-aurelia-avatar",
+  "extensions": {
+    "risu_asset_map": {
+      "Aurelia_admiring": "id-a00",
+      "Aurelia_angry": "id-a01",
+      "Aurelia_annoyed": "id-a02",
+      "Aurelia_bored": "id-a03",
+      "Aurelia_confused": "id-a04",
+      "Aurelia_crying": "id-a05",
+      "Aurelia_curious": "id-a06",
+      "Aurelia_embarrassed": "id-a07",
+      "Aurelia_happy": "id-a08",
+      "Aurelia_nervous": "id-a09",
+      "Aurelia_proud": "id-a10",
+      "Aurelia_relieved": "id-a11",
+      "Aurelia_sad": "id-a12",
+      "Aurelia_shy": "id-a13",
+      "Aurelia_smirking": "id-a14",
+      "Aurelia_surprised": "id-a15",
+      "Aurelia_thinking": "id-a16",
+      "Aurelia_worried": "id-a17"
+    },
+    "lumirealm": {
+      "asset_index": {
+        "Aurelia_admiring": {
+          "imageIds": [
+            "id-a00"
+          ],
+          "ext": "png"
+        },
+        "Aurelia_angry": {
+          "imageIds": [
+            "id-a01"
+          ],
+          "ext": "png"
+        },
+        "Aurelia_annoyed": {
+          "imageIds": [
+            "id-a02"
+          ],
+          "ext": "png"
+        },
+        "Aurelia_bored": {
+          "imageIds": [
+            "id-a03"
+          ],
+          "ext": "png"
+        },
+        "Aurelia_confused": {
+          "imageIds": [
+            "id-a04"
+          ],
+          "ext": "png"
+        },
+        "Aurelia_crying": {
+          "imageIds": [
+            "id-a05"
+          ],
+          "ext": "png"
+        },
+        "Aurelia_curious": {
+          "imageIds": [
+            "id-a06"
+          ],
+          "ext": "png"
+        },
+        "Aurelia_embarrassed": {
+          "imageIds": [
+            "id-a07"
+          ],
+          "ext": "png"
+        },
+        "Aurelia_happy": {
+          "imageIds": [
+            "id-a08"
+          ],
+          "ext": "png"
+        },
+        "Aurelia_nervous": {
+          "imageIds": [
+            "id-a09"
+          ],
+          "ext": "png"
+        },
+        "Aurelia_proud": {
+          "imageIds": [
+            "id-a10"
+          ],
+          "ext": "png"
+        },
+        "Aurelia_relieved": {
+          "imageIds": [
+            "id-a11"
+          ],
+          "ext": "png"
+        },
+        "Aurelia_sad": {
+          "imageIds": [
+            "id-a12"
+          ],
+          "ext": "png"
+        },
+        "Aurelia_shy": {
+          "imageIds": [
+            "id-a13"
+          ],
+          "ext": "png"
+        },
+        "Aurelia_smirking": {
+          "imageIds": [
+            "id-a14"
+          ],
+          "ext": "png"
+        },
+        "Aurelia_surprised": {
+          "imageIds": [
+            "id-a15"
+          ],
+          "ext": "png"
+        },
+        "Aurelia_thinking": {
+          "imageIds": [
+            "id-a16"
+          ],
+          "ext": "png"
+        },
+        "Aurelia_worried": {
+          "imageIds": [
+            "id-a17"
+          ],
+          "ext": "png"
+        }
+      }
+    }
+  }
+}

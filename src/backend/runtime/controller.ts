@@ -16,6 +16,7 @@ import { isFrontendRequest } from "../../protocol.js";
 import { compareTurnKeys } from "../core/guards.js";
 import { PlanningQueue, isAbortError } from "../core/planning-queue.js";
 import { resolveNativeCardJobs } from "./native-assets.js";
+import { handleReferenceImageResponse } from "./reference-source.js";
 import { CACHE_JOB_PROVIDER, createAssetJobs, generateAssets, resolveCacheCues, retainPlanEpisodes } from "./images.js";
 import { SceneImageCache, sceneImageScope } from "../core/scene-image-cache.js";
 import { fingerprintForMessage, planTurn } from "./planner.js";
@@ -1188,6 +1189,13 @@ async function handleFrontendMessage(spindle: SpindleAPI, request: FrontendReque
       if (!latest) return;
       spindle.sendToFrontend({ type: "vn_planning", chatId: request.chatId }, userId);
       await processAssistantMessage(spindle, request.chatId, latest, latest.content, userId);
+      return;
+    }
+    case "vn_reference_image": {
+      // Reply to a backend-initiated card reference fetch. The payload is
+      // routed by request id only and never logged (it carries base64).
+      if (typeof request.requestId !== "string" || request.requestId.length > 100) return;
+      handleReferenceImageResponse(request);
       return;
     }
     case "vn_retry_turn": {

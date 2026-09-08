@@ -8,6 +8,7 @@ import {
   BUDGET_PRESETS,
   EFFECT_INTENSITY_OPTIONS,
   IMAGE_SOURCE_OPTIONS,
+  REFERENCE_SOURCE_OPTIONS,
   SCENE_IMAGE_FIT_OPTIONS,
   SETUP_DONE_KEY,
   TEXT_SCALE_MAX,
@@ -28,6 +29,7 @@ import {
   jsonObject,
   namedStepFor,
   normalizeEffectIntensity,
+  normalizeReferenceSource,
   normalizeSceneImageFit,
   normalizeThemePreset,
   resetPatch,
@@ -410,6 +412,11 @@ export class VisualNovelSettingsPanel {
               <div data-live>
                 <label data-check><input name="referenceAnchoring" type="checkbox" /><span>Keep each character looking the same between pictures<small>Reuses a character's first portrait as a reference for later ones.</small></span></label>
               </div>
+              <fieldset data-live data-reference-source hidden>
+                <legend>Reference image source</legend>
+                <div data-options>${REFERENCE_SOURCE_OPTIONS.map((option) =>
+                  `<label><input type="radio" name="referenceSource" value="${option.value}" /><span><b>${esc(option.label)}</b><small>${esc(option.help)}</small></span></label>`).join("")}</div>
+              </fieldset>
               <div data-field data-live>
                 <span>Image connection</span>
                 <div data-readiness="image" data-level="loading"><div><b data-readiness-title></b><small data-readiness-action></small><div data-actions hidden><button type="button" data-refresh-connections>Refresh</button></div></div></div>
@@ -776,6 +783,7 @@ export class VisualNovelSettingsPanel {
       case "generateChoices": return { generateChoices: checked };
       case "autoEnter": return { autoEnter: checked };
       case "referenceAnchoring": return { referenceAnchoring: checked };
+      case "referenceSource": return { referenceSource: normalizeReferenceSource(target.value) };
       case "themePreset":
       case "setupThemePreset":
         return { themePreset: normalizeThemePreset(target.value) };
@@ -1135,6 +1143,8 @@ export class VisualNovelSettingsPanel {
     this.control<HTMLInputElement>("generateChoices").checked = config.generateChoices;
     this.control<HTMLInputElement>("autoEnter").checked = config.autoEnter;
     this.control<HTMLInputElement>("referenceAnchoring").checked = config.referenceAnchoring;
+    this.setRadio("referenceSource", config.referenceSource);
+    this.root.querySelector<HTMLElement>("[data-reference-source]")!.hidden = !config.referenceAnchoring;
 
     const speedStep = namedStepFor(TEXT_SPEED_STEPS, config.textSpeed);
     this.setRadio("textSpeedStep", speedStep ? String(speedStep.value) : "custom");

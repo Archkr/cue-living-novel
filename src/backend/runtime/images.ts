@@ -35,6 +35,13 @@ import {
   VALID_IMAGE_MIMES,
   type StoredPortrait
 } from "./storage.js";
+import { REFERENCE_IMAGE_MAX_BYTES } from "../../protocol.js";
+import {
+  fetchReferenceImageViaFrontend,
+  loadCardReferenceContext,
+  type CardAssetResolution,
+  type CardReferenceContext
+} from "./reference-source.js";
 
 export type AssetUpdateHandler = (jobs: AssetJob[], changed: AssetJob) => Promise<void> | void;
 
@@ -70,7 +77,46 @@ export function portraitIdentityFingerprint(name: string, identity: string, conf
 }
 
 export function compatiblePortrait(portrait: StoredPortrait | undefined, fingerprint: string): StoredPortrait | undefined {
+  // Card portraits live under their own `card:` key and never satisfy the
+  // captured lookup; the guard covers hand-edited stores.
+  if (portrait?.source === "card") return undefined;
   return fingerprint && portrait?.identityFingerprint === fingerprint ? portrait : undefined;
+}
+
+/** Portrait-store key for a character's card-sourced portrait. */
+export function cardPortraitKey(characterKey: string): string {
+  return `card:${characterKey}`;
+}
+
+/**
+ * The cache-key reference descriptor for one cue in card mode: the card
+ * sprite actually chosen (image id + asset name), the captured fallback
+ * (with its portrait image id when one anchors this render), or none.
+ */
+export function cardReferenceForCache(
+  cardPortrait: StoredPortrait | undefined,
+  capturedPortrait: StoredPortrait | undefined
+): SceneImageReference {
+  if (cardPortrait) {
+    return {
+      source: "card",
+      imageId: cardPortrait.imageId,
+      ...(cardPortrait.assetName ? { assetName: cardPortrait.assetName } : {})
+    };
+  }
+  if (capturedPortrait) {
+    return {
+      source: "captured",
+      ...(capturedPortrait.imageId ? { imageId: capturedPortrait.imageId } : {})
+    };
+  }
+  return { source: "none" };
+}
+
+/** The stored card portrait for a character, or undefined. */
+export function cardPortraitFor(portraits: Record<string, StoredPortrait>, characterKey: string): StoredPortrait | undefined {
+  const portrait = portraits[cardPortraitKey(characterKey)];
+  return portrait?.source === "card" ? portrait : undefined;
 }
 
 export function resolveCueCharacterVisualState(
@@ -261,12 +307,25 @@ function userImageParameters(config: VisualNovelConfig): Record<string, unknown>
  * pose, bounded action, framing) AND the exact provider request it produced.
  * `provider` is the resolved image provider id (null when unknown).
  */
+/**
+ * The reference anchor actually chosen for one cue, carried in the cache key
+ * in card mode only (captured-mode default keys keep their exact bytes).
+ * "card" pins a fixed sprite (image id + asset name); "captured" is the
+ * fallback to a captured portrait (with its image id when one anchors this
+ * render); "none" renders unanchored (portrait capture or no identity).
+ */
+export type SceneImageReference =
+  | { source: "card"; imageId: string; assetName?: string }
+  | { source: "captured"; imageId?: string }
+  | { source: "none" };
+
 export function sceneImageIdentityFor(
   config: VisualNovelConfig,
   scene: SceneState,
   cue: VisualCue,
   characterAppearance: CharacterAppearanceMap | undefined,
-  provider: string | null
+  provider: string | null,
+  reference?: SceneImageReference
 ): SceneImageIdentity {
   const description = describeCue(config, scene, cue, characterAppearance);
   const { connectionId, workflowId } = splitConnectionSelection(config.imageConnectionId);
@@ -291,7 +350,14 @@ export function sceneImageIdentityFor(
       model: config.imageModel,
       parameters: userImageParameters(config),
       promptSyntax: description.promptSyntax,
-      referenceAnchoring: referenceAnchoringEnabled(config)
+      referenceAnchoring: referenceAnchoringEnabled(config),
+      // Only present in card mode, so default ("captured") cache keys keep
+      // their exact bytes. Card mode also carries the actually chosen
+      // reference, so different sprites - and anchored vs fallback renders -
+      // never share entries.
+      ...(referenceAnchoringEnabled(config) && config.referenceSource === "card"
+        ? { referenceSource: "card" as const, reference: reference ?? ({ source: "none" } as SceneImageReference) }
+        : {})
     }
   };
 }
@@ -371,6 +437,25 @@ export async function resolveCacheCues(
   const provider = options.provider !== undefined ? options.provider : await resolveImageProviderId(spindle, config, userId);
   const verify = options.verifyImage ?? defaultSceneImageVerifier(spindle, userId);
   const log = options.log ?? (() => {});
+  // Card mode keys carry the chosen reference, so candidates resolve it the
+  // same way the budgeted path does (stored portraits + one context lookup).
+  const cardSource = referenceAnchoringEnabled(config) && config.referenceSource === "card"
+    && provider !== null && REFERENCE_PROVIDERS.has(provider);
+  let candidatePortraits: Record<string, StoredPortrait> = {};
+  let candidateResolutions: Map<string, CardAssetResolution> | null = null;
+  if (cardSource) {
+    try {
+      const [loaded, ctx] = await Promise.all([
+        loadPortraits(spindle, plan.key.chatId, userId).catch(() => ({} as Record<string, StoredPortrait>)),
+        loadCardReferenceContext(spindle, plan, userId).catch(() => null)
+      ]);
+      candidatePortraits = loaded;
+      candidateResolutions = ctx?.resolutions ?? null;
+    } catch {
+      candidatePortraits = {};
+      candidateResolutions = null;
+    }
+  }
   const resolved: AssetJob[] = [];
   for (const cue of pending) {
     let scene: SceneState;
@@ -386,7 +471,35 @@ export async function resolveCacheCues(
     }
     let key: string;
     try {
-      key = sceneImageCacheKey(sceneImageIdentityFor(config, scene, cue, characterAppearance, provider));
+      let reference: SceneImageReference | undefined;
+      if (cardSource) {
+        const visualState = resolveCueCharacterVisualState(scene, cue, characterAppearance);
+        const cardPortrait = visualState.characterKey
+          ? cardPortraitFor(candidatePortraits, visualState.characterKey)
+          : undefined;
+        // A candidate whose sprite is not stored yet will fetch it on the
+        // budgeted path, so key it by the resolution (same image id + asset).
+        const pendingResolution = visualState.characterKey
+          ? candidateResolutions?.get(visualState.characterKey)
+          : undefined;
+        const pendingAsPortrait: StoredPortrait | undefined = !cardPortrait && pendingResolution
+          ? {
+              name: visualState.characterName,
+              imageId: pendingResolution.imageId,
+              data: "",
+              mimeType: "image/png",
+              createdAt: new Date().toISOString(),
+              source: "card",
+              ...(pendingResolution.assetName ? { assetName: pendingResolution.assetName } : {})
+            }
+          : undefined;
+        const fingerprint = portraitIdentityFingerprint(visualState.characterName, visualState.baseIdentity, config, provider);
+        const captured = !cardPortrait && !pendingAsPortrait && visualState.characterKey
+          ? compatiblePortrait(candidatePortraits[visualState.characterKey], fingerprint)
+          : undefined;
+        reference = cardReferenceForCache(cardPortrait ?? pendingAsPortrait, captured);
+      }
+      key = sceneImageCacheKey(sceneImageIdentityFor(config, scene, cue, characterAppearance, provider, reference));
     } catch {
       continue;
     }
@@ -587,6 +700,7 @@ export async function generateAssets(
   // is on; reference anchoring keeps its own gate below.
   const provider = referenceAnchoringEnabled(config) || cache ? await resolveImageProviderId(spindle, config, userId) : null;
   const anchorable = referenceAnchoringEnabled(config) && provider !== null && REFERENCE_PROVIDERS.has(provider);
+  const cardSource = anchorable && config.referenceSource === "card";
 
   const [initialPortraits, characterAppearance] = await Promise.all([
     anchorable ? loadPortraits(spindle, plan.key.chatId, userId).catch(() => ({} as Record<string, StoredPortrait>)) : Promise.resolve({} as Record<string, StoredPortrait>),
@@ -598,6 +712,69 @@ export async function generateAssets(
     const portraitNames = Object.values(portraits).map((entry) => entry.name).join(", ");
     spindle.log.info(`[VN] reference anchoring ${anchorable ? `active (provider=${provider})` : referenceAnchoringEnabled(config) ? `inactive (provider=${provider ?? "unknown"} unsupported)` : "disabled by config"}; ${Object.keys(portraits).length} portrait(s)${portraitNames ? ` [${portraitNames}]` : ""}`);
   }
+
+  /* ---- referenceSource "card": one fixed card asset per character ---- */
+  // Resolution happens once per batch; the per-character relay fetch happens
+  // at most once per chat (the stored portrait is the lock). Any failure in
+  // here degrades to the captured path and never blocks the batch.
+  const cardContext: CardReferenceContext | null = cardSource
+    ? await loadCardReferenceContext(spindle, plan, userId).catch(() => null)
+    : null;
+  const cardFetchPromises = new Map<string, Promise<StoredPortrait | null>>();
+  // Test escape hatch mirroring `referenceStrength`: not a provider parameter.
+  const rawFetchTimeout = Number(config.imageParameters.referenceFetchTimeoutMs);
+  const cardFetchTimeoutMs = Number.isFinite(rawFetchTimeout) && rawFetchTimeout > 0 ? rawFetchTimeout : undefined;
+  const acquireCardPortrait = (characterName: string, characterKey: string, resolution: CardAssetResolution): Promise<StoredPortrait | null> => {
+    const existing = cardFetchPromises.get(characterKey);
+    if (existing) return existing;
+    const pending = (async (): Promise<StoredPortrait | null> => {
+      if (signal.aborted) return null;
+      const dataUrl = await fetchReferenceImageViaFrontend(spindle, {
+        chatId: plan.key.chatId,
+        imageId: resolution.imageId,
+        characterKey,
+        ...(userId ? { userId } : {}),
+        ...(cardFetchTimeoutMs !== undefined ? { timeoutMs: cardFetchTimeoutMs } : {}),
+        signal
+      });
+      // Never persist after close/abort: a reply that raced cancellation is dropped.
+      if (signal.aborted) return null;
+      const parsed = parseDataUrl(dataUrl ?? undefined);
+      if (!parsed || Math.floor(parsed.data.length * 3 / 4) > REFERENCE_IMAGE_MAX_BYTES) {
+        // Never log the data URL itself; base64 stays out of the logs.
+        if (config.debugLogging) spindle.log.info(`[VN] card reference for "${characterName}" unavailable (${dataUrl === null ? "relay timeout or error" : parsed ? "payload too large" : "invalid data URL"}) — using the captured path`);
+        return null;
+      }
+      const stored: StoredPortrait = {
+        name: characterName,
+        imageId: resolution.imageId,
+        data: parsed.data,
+        mimeType: parsed.mimeType,
+        createdAt: new Date().toISOString(),
+        source: "card",
+        ...(resolution.assetName ? { assetName: resolution.assetName } : {})
+      };
+      if (signal.aborted) return null;
+      try {
+        if (await savePortrait(spindle, plan.key.chatId, stored, userId, { key: cardPortraitKey(characterKey) })) {
+          portraits[cardPortraitKey(characterKey)] = stored;
+          if (config.debugLogging) spindle.log.info(`[VN] card reference locked for "${characterName}" -> ${resolution.assetName || "card avatar"} (${stored.imageId}, ${stored.mimeType}, ${stored.data.length} base64 chars)`);
+        } else {
+          const refreshed = await loadPortraits(spindle, plan.key.chatId, userId);
+          const winner = cardPortraitFor(refreshed, characterKey);
+          if (winner) {
+            portraits[cardPortraitKey(characterKey)] = winner;
+            return winner;
+          }
+        }
+      } catch {
+        // Non-fatal: the in-memory portrait still anchors this batch.
+      }
+      return stored;
+    })();
+    cardFetchPromises.set(characterKey, pending);
+    return pending;
+  };
 
   /* ---- scene-image cache (temporary, reuse-first, generate-on-miss) ---- */
   const scope = sceneImageScope(userId, plan.key.chatId);
@@ -679,10 +856,23 @@ export async function generateAssets(
         const characterName = visualState.characterName;
         const characterKey = visualState.characterKey;
 
+        /* ---- card sprite reference first (referenceSource "card") ---- */
+        // The stored card portrait is the per-chat lock; the relay fetch runs
+        // at most once per character per batch and times out into the
+        // captured path below.
+        let cardPortrait: StoredPortrait | undefined;
+        if (cardSource && characterKey) {
+          cardPortrait = cardPortraitFor(portraits, characterKey);
+          if (!cardPortrait) {
+            const resolution = cardContext?.resolutions.get(characterKey);
+            if (resolution) cardPortrait = (await acquireCardPortrait(characterName, characterKey, resolution)) ?? undefined;
+          }
+        }
+
         /* ---- reference anchoring decision first: unchanged, and it gates reuse ---- */
         // If another render is currently capturing this character, wait for it before proceeding.
         // Dependent renders wait; unrelated characters stay concurrent.
-        if (anchorable && characterKey && capturePromises.has(characterKey)) {
+        if (!cardPortrait && anchorable && characterKey && capturePromises.has(characterKey)) {
           try {
             await capturePromises.get(characterKey);
           } catch {
@@ -691,7 +881,7 @@ export async function generateAssets(
         }
 
         const identityFingerprint = portraitIdentityFingerprint(characterName, visualState.baseIdentity, config, provider);
-        let portrait = anchorable && characterKey ? compatiblePortrait(portraits[characterKey], identityFingerprint) : undefined;
+        let portrait = cardPortrait ?? (anchorable && characterKey ? compatiblePortrait(portraits[characterKey], identityFingerprint) : undefined);
         let isCaptureOwner = false;
         let captureResolve: ((val: StoredPortrait | null) => void) | undefined;
 
@@ -713,7 +903,10 @@ export async function generateAssets(
             cache.recordMiss("identity_unresolved");
             cacheLog(`scene-cache p${cue.paragraphIndex} miss reason=identity_unresolved (planner did not persist a durable identity) -> generating`);
           } else {
-            cacheKey = sceneImageCacheKey(sceneImageIdentityFor(config, scene, cue, characterAppearance, provider));
+            cacheKey = sceneImageCacheKey(sceneImageIdentityFor(
+              config, scene, cue, characterAppearance, provider,
+              cardSource ? cardReferenceForCache(cardPortrait, portrait) : undefined
+            ));
             episode = sceneEpisodeOf(scene, cache.generation(scope));
             if (bypass.has(scheduledJob.jobId)) {
               cache.recordMiss("bypass");

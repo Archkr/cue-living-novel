@@ -65,6 +65,8 @@ export type SceneImageIdentity = {
     promptSyntax: string;
     /** The reference-anchoring settings toggle (not the portrait itself). */
     referenceAnchoring: boolean;
+    /** Set only when anchoring uses card sprites; absent for the default captured source. */
+    referenceSource?: "card";
   };
 };
 

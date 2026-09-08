@@ -6,6 +6,7 @@ import {
   BUDGET_PRESETS,
   EFFECT_INTENSITY_OPTIONS,
   IMAGE_SOURCE_OPTIONS,
+  REFERENCE_SOURCE_OPTIONS,
   SCENE_IMAGE_FIT_OPTIONS,
   TEXT_SPEED_STEPS,
   budgetPresetFor,
@@ -30,7 +31,24 @@ import {
   NOVELAI_RESOLUTION_PRESETS,
   NOVELAI_SAMPLER_OPTIONS,
   NOVELAI_NOTICE,
+  normalizeReferenceSource,
 } from "./model";
+
+describe("reference source options", () => {
+  test("exposes exactly captured (default first) and card sprites", () => {
+    expect(REFERENCE_SOURCE_OPTIONS.map((option) => option.value)).toEqual(["captured", "card"]);
+    expect(REFERENCE_SOURCE_OPTIONS[0]!.label).toBe("Captured render (default)");
+    expect(REFERENCE_SOURCE_OPTIONS[1]!.label).toBe("Card sprites");
+    expect(REFERENCE_SOURCE_OPTIONS[1]!.help).toMatch(/characters the card does not know still use captured renders/i);
+  });
+
+  test("normalizes unknown values back to the default", () => {
+    expect(normalizeReferenceSource("card")).toBe("card");
+    expect(normalizeReferenceSource("captured")).toBe("captured");
+    expect(normalizeReferenceSource("sprites")).toBe(DEFAULT_CONFIG.referenceSource);
+    expect(normalizeReferenceSource("")).toBe(DEFAULT_CONFIG.referenceSource);
+  });
+});
 
 describe("image source", () => {
   test("reads one choice from the two stored flags", () => {

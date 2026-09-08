@@ -1,5 +1,6 @@
 import type { SpindleFrontendContext } from "lumiverse-spindle-types";
 import type { VisualNovelConfig, VisualNovelEffectIntensity } from "../../config.js";
+import { REFERENCE_IMAGE_MAX_BYTES } from "../../protocol.js";
 import type { AssetView, BackendResponse, ConnectionCatalogOption, FrontendRequest, TurnView } from "../../protocol.js";
 import { AudioEngine, VnStage, isAmbientEffect, isStageEffect } from "../stage/index.js";
 import type { AmbientEffect, StageEffect } from "../store/index.js";
@@ -27,6 +28,30 @@ function base64FromBytes(bytes: Uint8Array): string {
     binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
   }
   return btoa(binary);
+}
+
+/**
+ * Answer a backend `vn_reference_fetch`: fetch the card asset from the
+ * logged-in origin and relay it as a base64 data URL (the backend cannot
+ * read image bytes itself). Always replies exactly once, with `dataUrl` or
+ * `error`; no UI is involved and the base64 body is never logged.
+ */
+export async function relayReferenceFetch(
+  message: { requestId: string; imageId: string },
+  fetchImpl: (input: string, init?: RequestInit) => Promise<Response>,
+  send: (reply: Extract<FrontendRequest, { type: "vn_reference_image" }>) => void
+): Promise<void> {
+  try {
+    const response = await fetchImpl(`/api/v1/images/${encodeURIComponent(message.imageId)}`, { credentials: "same-origin" });
+    if (!response.ok) throw new Error(`Image fetch failed (${response.status}).`);
+    const blob = await response.blob();
+    if (blob.size > REFERENCE_IMAGE_MAX_BYTES) throw new Error("Reference image exceeds the 8 MiB relay limit.");
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    const mimeType = blob.type && blob.type.startsWith("image/") ? blob.type : "image/png";
+    send({ type: "vn_reference_image", requestId: message.requestId, dataUrl: `data:${mimeType};base64,${base64FromBytes(bytes)}` });
+  } catch (error) {
+    send({ type: "vn_reference_image", requestId: message.requestId, error: error instanceof Error ? error.message : String(error) });
+  }
 }
 
 function messageType(value: unknown): string {
@@ -813,6 +838,13 @@ export function setupVisualNovelFrontend(baseContext: SpindleFrontendContext): (
         retryable: true,
         retryScope: "Checks the latest message again.",
       });
+      return;
+    }
+    if (type === "vn_reference_fetch" && message.type === "vn_reference_fetch") {
+      // Data relay for card-sourced reference anchoring. Served regardless of
+      // the active chat: the backend keeps generating for its own chat and the
+      // image id came from the backend, not from user input.
+      void relayReferenceFetch(message, (input, init) => fetch(input, init), (reply) => ctx.sendToBackend(reply));
       return;
     }
     if (type === "vn_planning" && message.type === "vn_planning") {

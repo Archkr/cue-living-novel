@@ -86,6 +86,22 @@ try {
   assert.equal(await settings.locator("[data-sample-picture]").isVisible(), false, "sample drops the picture for text only");
   await settings.locator('input[name="imageSource"][value="generated"]').check();
 
+  // Reference source: the radio shows only while the reference toggle is on,
+  // saves a single-field patch, and remembers its choice across the toggle.
+  const referenceSource = settings.locator("[data-reference-source]");
+  assert.equal(await referenceSource.isVisible(), true, "reference source shows while the toggle is on");
+  assert.equal(await settings.locator('input[name="referenceSource"][value="captured"]').isChecked(), true, "captured is the default");
+  await settings.locator('input[name="referenceSource"][value="card"]').check();
+  assert.deepEqual(await lastPatch(page), { referenceSource: "card" });
+  await settings.locator('input[name="referenceAnchoring"]').uncheck();
+  assert.deepEqual(await lastPatch(page), { referenceAnchoring: false });
+  assert.equal(await referenceSource.isVisible(), false, "reference source hides when the toggle is off");
+  await settings.locator('input[name="referenceAnchoring"]').check();
+  assert.equal(await referenceSource.isVisible(), true, "reference source returns with the toggle");
+  assert.equal(await settings.locator('input[name="referenceSource"][value="card"]').isChecked(), true, "the saved choice survives the toggle");
+  await settings.locator('input[name="referenceSource"][value="captured"]').check();
+  assert.deepEqual(await lastPatch(page), { referenceSource: "captured" });
+
   // Sound: empty state until the library reports files.
   await settings.getByRole("heading", { name: "Sound", exact: true }).click();
   assert.equal(await settings.locator("[data-sound-empty]").isVisible(), true, "empty state before any scan");

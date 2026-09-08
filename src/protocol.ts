@@ -33,7 +33,23 @@ export type FrontendRequest =
       chunkIndex?: number;
       chunkCount?: number;
     }
-  | { type: "vn_import_audio_done"; fileCount: number };
+  | { type: "vn_import_audio_done"; fileCount: number }
+  | {
+      /**
+       * Reply to a `vn_reference_fetch`: the frontend fetched the card asset
+       * bytes and relays them as a base64 data URL. Exactly one of `dataUrl`
+       * and `error` is set. The backend cannot read image bytes itself
+       * (`spindle.images.get` only returns a URL), so the logged-in frontend
+       * does the fetch.
+       */
+      type: "vn_reference_image";
+      requestId: string;
+      dataUrl?: string;
+      error?: string;
+    };
+
+/** Upper bound for a relayed reference image (decoded bytes, checked on both sides). */
+export const REFERENCE_IMAGE_MAX_BYTES = 8 * 1024 * 1024;
 
 export type AssetView = {
   jobId: string;
@@ -118,6 +134,18 @@ export type BackendResponse =
   | { type: "vn_generation"; chatId: string; active: boolean; error?: string }
   | { type: "vn_permission"; permission: string; granted: boolean }
   | { type: "vn_audio_scanned"; bgmCount: number; sfxCount: number }
+  | {
+      /**
+       * Ask the frontend to fetch `/api/v1/images/<imageId>` (same origin,
+       * with credentials) and reply with `vn_reference_image` carrying the
+       * matching `requestId`. Used only when `referenceSource` is "card".
+       */
+      type: "vn_reference_fetch";
+      chatId: string;
+      requestId: string;
+      imageId: string;
+      characterKey: string;
+    }
   | { type: "vn_error"; chatId?: string; operation: string; error: string };
 
 export function isFrontendRequest(value: unknown): value is FrontendRequest {

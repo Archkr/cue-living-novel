@@ -9,6 +9,7 @@ import {
   currentAssetFailure,
   decideTurnApplication,
   nameplateForParagraph,
+  relayReferenceFetch,
   sameTurnIdentity,
   selectCurrentImage,
   shouldPreserveImage,
@@ -17,6 +18,8 @@ import {
   type VisualStageThemeTarget,
 } from "./controller";
 import type { AssetView, TurnView } from "../../protocol.js";
+import { REFERENCE_IMAGE_MAX_BYTES } from "../../protocol.js";
+import type { FrontendRequest } from "../../protocol.js";
 
 test("image errors follow the reading cursor without revealing future failures", () => {
   const assets: AssetView[] = [
@@ -49,6 +52,7 @@ const baseConfig: VisualNovelConfig = {
   debugLogging: false,
   generateImages: true,
   referenceAnchoring: true,
+  referenceSource: "captured",
   generateChoices: true,
   promptPresets: [],
   originalReference: false,
@@ -480,5 +484,54 @@ describe("viewStateMessages (view announcement on boot, reconnect, activate, cha
 
   test("re-announcing after a reconnect is idempotent (same messages every time)", () => {
     expect(viewStateMessages("chat-1", true)).toEqual(viewStateMessages("chat-1", true));
+  });
+});
+
+describe("relayReferenceFetch (card reference data relay)", () => {
+  type Reply = Extract<FrontendRequest, { type: "vn_reference_image" }>;
+
+  function fakeResponse(options: { ok?: boolean; status?: number; size?: number; type?: string; bytes?: Uint8Array }): Response {
+    const bytes = options.bytes ?? new Uint8Array([65, 66, 67]);
+    return {
+      ok: options.ok ?? true,
+      status: options.status ?? 200,
+      blob: async () => ({
+        size: options.size ?? bytes.length,
+        type: options.type ?? "image/png",
+        arrayBuffer: async () => bytes.buffer
+      })
+    } as unknown as Response;
+  }
+
+  test("fetches the image with credentials and replies with a data URL", async () => {
+    const replies: Reply[] = [];
+    const urls: Array<{ url: string; init?: RequestInit }> = [];
+    await relayReferenceFetch(
+      { requestId: "r1", imageId: "img 1" },
+      async (url, init) => { urls.push({ url, ...(init ? { init } : {}) }); return fakeResponse({ type: "image/webp" }); },
+      (reply) => replies.push(reply)
+    );
+    expect(urls[0]?.url).toBe("/api/v1/images/img%201");
+    expect(urls[0]?.init?.credentials).toBe("same-origin");
+    expect(replies).toEqual([{ type: "vn_reference_image", requestId: "r1", dataUrl: "data:image/webp;base64,QUJD" }]);
+  });
+
+  test("a non-image MIME falls back to image/png in the data URL", async () => {
+    const replies: Reply[] = [];
+    await relayReferenceFetch({ requestId: "r1", imageId: "a" }, async () => fakeResponse({ type: "" }), (reply) => replies.push(reply));
+    expect(replies[0]?.dataUrl).toBe("data:image/png;base64,QUJD");
+  });
+
+  test("an HTTP failure and an oversize blob reply with an error, never with data", async () => {
+    const replies: Reply[] = [];
+    await relayReferenceFetch({ requestId: "r1", imageId: "a" }, async () => fakeResponse({ ok: false, status: 404 }), (reply) => replies.push(reply));
+    await relayReferenceFetch({ requestId: "r2", imageId: "a" }, async () => fakeResponse({ size: REFERENCE_IMAGE_MAX_BYTES + 1 }), (reply) => replies.push(reply));
+    await relayReferenceFetch({ requestId: "r3", imageId: "a" }, async () => { throw new Error("network down"); }, (reply) => replies.push(reply));
+    expect(replies.map((reply) => reply.requestId)).toEqual(["r1", "r2", "r3"]);
+    for (const reply of replies) {
+      expect(reply.dataUrl).toBeUndefined();
+      expect(typeof reply.error).toBe("string");
+    }
+    expect(replies[1]?.error).toMatch(/8 MiB/);
   });
 });
