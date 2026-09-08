@@ -1,6 +1,6 @@
 import type { SpindleFrontendContext } from "lumiverse-spindle-types";
 import type { VisualNovelConfig, VisualNovelEffectIntensity } from "../../config.js";
-import type { AssetView, BackendResponse, ConnectionCatalogOption, TurnView } from "../../protocol.js";
+import type { AssetView, BackendResponse, ConnectionCatalogOption, FrontendRequest, TurnView } from "../../protocol.js";
 import { AudioEngine, VnStage, isAmbientEffect, isStageEffect } from "../stage/index.js";
 import type { AmbientEffect, StageEffect } from "../store/index.js";
 import { VisualNovelSettingsPanel } from "../settings/panel.js";
@@ -312,6 +312,22 @@ export function connectionCatalogStates(message: {
   return { planner: forKind("planner"), image: forKind("image") };
 }
 
+/**
+ * The messages one state request sends, in order. The `vn_view` announcement
+ * always precedes `vn_get_state` so a (re)started backend learns whether this
+ * chat's view is open before it decides to plan; `viewOpen` repeats the flag on
+ * the state request itself. Every boot, reconnect, activation, and chat switch
+ * goes through this, which is how the backend relearns view state after a
+ * restart. Without a chat there is nothing to announce.
+ */
+export function viewStateMessages(chatId: string, viewOpen: boolean): FrontendRequest[] {
+  if (!chatId) return [{ type: "vn_get_state", chatId, viewOpen }];
+  return [
+    { type: "vn_view", chatId, open: viewOpen },
+    { type: "vn_get_state", chatId, viewOpen },
+  ];
+}
+
 export function setupVisualNovelFrontend(baseContext: SpindleFrontendContext): () => void {
   const previousCleanup = (globalThis as Record<PropertyKey, unknown>)[CLEANUP_KEY];
   if (typeof previousCleanup === "function") previousCleanup();
@@ -526,8 +542,16 @@ export function setupVisualNovelFrontend(baseContext: SpindleFrontendContext): (
     return ctx.getActiveChat().chatId ?? "";
   }
 
+  let lastAnnouncedChatId = "";
   function requestState(): void {
-    ctx.sendToBackend({ type: "vn_get_state", chatId: chatId() });
+    const current = chatId();
+    // Leaving a chat (home screen, or another chat) closes the previous view
+    // explicitly; the backend must not keep paying for a chat nobody is watching.
+    if (lastAnnouncedChatId && lastAnnouncedChatId !== current && active) {
+      ctx.sendToBackend({ type: "vn_view", chatId: lastAnnouncedChatId, open: false });
+    }
+    lastAnnouncedChatId = current;
+    for (const message of viewStateMessages(current, active)) ctx.sendToBackend(message);
   }
 
   const connectionOptions: Record<"planner" | "image", readonly ConnectionCatalogOption[]> = { planner: [], image: [] };
@@ -595,7 +619,13 @@ export function setupVisualNovelFrontend(baseContext: SpindleFrontendContext): (
 
   function deactivate(): void {
     if (destroyed) return;
+    const wasActive = active;
     active = false;
+    // Tell the backend this chat's view closed so it stops paying for the
+    // in-flight batch and skips upcoming replies. Only when actually open;
+    // repeats would be harmless (the backend close is idempotent).
+    const activeChatId = chatId();
+    if (wasActive && activeChatId) ctx.sendToBackend({ type: "vn_view", chatId: activeChatId, open: false });
     audioEngine.stopAll();
     destroyOverrides();
     app.setVisible(false);

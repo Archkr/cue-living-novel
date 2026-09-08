@@ -27,7 +27,7 @@ import {
   defaultSceneImageVerifier,
   type SceneCacheOptions
 } from "./images.js";
-import { markAssetReady, turnView, sceneImageCache, registerVisualNovelBackend, sendState } from "./controller.js";
+import { markAssetReady, turnView, sceneImageCache, registerVisualNovelBackend, sendState, viewRegistry } from "./controller.js";
 import { chatStatePath, turnPath, type StoredChatState, type StoredTurnRecord } from "./storage.js";
 
 // ---------------------------------------------------------------------------
@@ -980,10 +980,10 @@ describe("Scene Image Cache Integration", () => {
       } as unknown as SpindleAPI;
 
       // Call sendState for chat-ctrl-a (activates chat A)
-      await sendState(spindle, "chat-ctrl-a");
+      await sendState(spindle, "chat-ctrl-a", undefined, { viewOpen: true });
 
       // Call sendState for chat-ctrl-b (switches active chat to B -> releases chat A scope!)
-      await sendState(spindle, "chat-ctrl-b");
+      await sendState(spindle, "chat-ctrl-b", undefined, { viewOpen: true });
 
       // Chat A's scope was invalidated by controller!
       const postSwitchLookup = cache.lookup(scopeA, "key-a", "initial:0");
@@ -1327,6 +1327,7 @@ describe("Scene Image Cache Integration", () => {
           send_date: 1
         });
         const before = sent.length;
+        viewRegistry().open("user-1", chatId);
         fire("GENERATION_ENDED", { chatId, messageId: id, content: CONTENT }, "user-1");
         const start = Date.now();
         while (!sent.slice(before).some((m) => m.type === "vn_turn" && (m.turn as { messageId: string }).messageId === id)) {
@@ -1466,11 +1467,11 @@ describe("Scene Image Cache Integration", () => {
       expect(f.record("chat-A", "m4").jobs[0]!.status).not.toBe("generated");
 
       // Chat switch: viewing chat B releases chat A's scope.
-      f.request({ type: "vn_get_state", chatId: "chat-A" });
+      f.request({ type: "vn_get_state", chatId: "chat-A", viewOpen: true });
       await new Promise<void>((resolve) => setTimeout(resolve, 40));
       expect(cache.snapshot(scopeA).length).toBe(4);
 
-      f.request({ type: "vn_get_state", chatId: "chat-B" });
+      f.request({ type: "vn_get_state", chatId: "chat-B", viewOpen: true });
       const startB = Date.now();
       while (cache.snapshot(scopeA).length !== 0) {
         if (Date.now() - startB > 3000) throw new Error("Timed out waiting for chat switch release");
@@ -1478,7 +1479,7 @@ describe("Scene Image Cache Integration", () => {
       }
       expect(cache.stats().invalidations.chat_switch).toBeGreaterThanOrEqual(1);
 
-      f.request({ type: "vn_get_state", chatId: "chat-A" });
+      f.request({ type: "vn_get_state", chatId: "chat-A", viewOpen: true });
       await new Promise<void>((resolve) => setTimeout(resolve, 40));
 
       // Back in chat A the same Mira cue must generate again (no resurrection).

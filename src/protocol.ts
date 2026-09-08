@@ -3,7 +3,18 @@ import type { PanelArtifact } from "./shared/panels.js";
 
 export type FrontendRequest =
   | { type: "vn_resolve_panel_template"; chatId: string; characterId?: string; requestId: string; template: string }
-  | { type: "vn_get_state"; chatId?: string }
+  /**
+   * Announce whether the Cue view is open for a chat. The backend only plans
+   * turns and generates images for chats whose view is open; closing the view
+   * aborts the in-flight batch. Idempotent; repeats are no-ops.
+   */
+  | { type: "vn_view"; chatId: string; open: boolean }
+  /**
+   * `viewOpen` repeats the view announcement on the state request itself.
+   * True opens the view, false closes it; absent changes nothing (a state
+   * request that says nothing about the view never opens it).
+   */
+  | { type: "vn_get_state"; chatId?: string; viewOpen?: boolean }
   | { type: "vn_get_connection_catalog" }
   | { type: "vn_set_config"; patch: Partial<VisualNovelConfig>; chatId?: string }
   | { type: "vn_submit"; chatId: string; content: string; requestId: string }

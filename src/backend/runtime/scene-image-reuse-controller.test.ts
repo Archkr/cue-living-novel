@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { SpindleAPI } from "lumiverse-spindle-types";
-import { registerVisualNovelBackend, sceneImageCache, sendState, turnView } from "./controller.js";
+import { registerVisualNovelBackend, sceneImageCache, sendState, turnView, viewRegistry } from "./controller.js";
 import { chatStatePath, type StoredChatState, type StoredTurnRecord } from "./storage.js";
 import { computeAssetProgress } from "../../frontend/host/controller.js";
 import { retryScopeForTurn } from "../../frontend/host/turn-status.js";
@@ -122,6 +122,7 @@ describe("controller wiring: extra swaps beyond the cap without extra requests",
     sceneImageCache().clear();
     const { spindle, fire, data, sent, calls } = fixture([{ id: "assistant-1", content }]);
     registerVisualNovelBackend(spindle);
+    viewRegistry().open("user-1", "chat");
     fire("GENERATION_ENDED", { chatId: "chat", messageId: "assistant-1", content }, "user-1");
     await settle(() => sent.some((message) => message.type === "vn_asset" && (message.asset as Record<string, unknown>).source === "cache"));
 
@@ -156,6 +157,7 @@ describe("controller wiring: extra swaps beyond the cap without extra requests",
     sceneImageCache().clear();
     const { spindle, fire, data, sent, calls } = fixture([{ id: "assistant-1", content }, { id: "assistant-2", content }]);
     registerVisualNovelBackend(spindle);
+    viewRegistry().open("user-1", "chat");
     fire("GENERATION_ENDED", { chatId: "chat", messageId: "assistant-1", content }, "user-1");
     await settle(() => sent.some((message) => message.type === "vn_asset" && (message.asset as Record<string, unknown>).source === "cache"));
     expect(calls).toHaveLength(1);
@@ -211,9 +213,9 @@ describe("controller wiring: extra swaps beyond the cap without extra requests",
     const scopeA = sceneImageScope("user-1", "chat-a");
     sceneImageCache().store(scopeA, "k", { imageId: "img", episode: "initial:0", provenance: { provider: null, connectionId: null, model: "", promptFingerprint: "k", assistantMessageId: "m", swipeId: 0, jobId: "j" } }, sceneImageCache().admission(scopeA));
     const token = sceneImageCache().admission(scopeA);
-    await sendState(spindle, "chat-a", "user-1");
+    await sendState(spindle, "chat-a", "user-1", { viewOpen: true });
     expect(sceneImageCache().size).toBe(1);
-    await sendState(spindle, "chat-b", "user-1");
+    await sendState(spindle, "chat-b", "user-1", { viewOpen: true });
     expect(sceneImageCache().size).toBe(0);
     expect(sceneImageCache().isAdmitted(token)).toBe(false);
     expect(sceneImageCache().stats().invalidations.chat_switch).toBe(1);

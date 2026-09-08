@@ -107,7 +107,7 @@ describe("existing-chat bootstrap", () => {
       message({ id: "assistant-1", content: "The old door opens.\n\nMira raises her lantern." })
     ]);
 
-    await sendState(runtime.spindle, "chat-bootstrap", "user-1");
+    await sendState(runtime.spindle, "chat-bootstrap", "user-1", { viewOpen: true });
 
     expect(runtime.sent[0]).toMatchObject({ type: "vn_state", chatId: "chat-bootstrap", turn: null });
     expect(runtime.sent[1]).toMatchObject({ type: "vn_planning", chatId: "chat-bootstrap" });
@@ -133,7 +133,7 @@ describe("existing-chat bootstrap", () => {
     ]);
     const runtime = bootstrapRuntime([message({ id: "assistant-2", content: "A recoverable scene." })], { initial });
 
-    await sendState(runtime.spindle, "chat-bootstrap", "user-1");
+    await sendState(runtime.spindle, "chat-bootstrap", "user-1", { viewOpen: true });
 
     expect(runtime.sent.map(({ type }) => type)).toEqual(["vn_state", "vn_planning", "vn_turn"]);
     // One warning for the broken record, one for the audible planner fallback.
@@ -144,7 +144,7 @@ describe("existing-chat bootstrap", () => {
 
   test("leaves an empty chat idle without invoking the planner", async () => {
     const runtime = bootstrapRuntime([]);
-    await sendState(runtime.spindle, "chat-bootstrap", "user-1");
+    await sendState(runtime.spindle, "chat-bootstrap", "user-1", { viewOpen: true });
     expect(runtime.sent).toHaveLength(1);
     expect(runtime.sent[0]).toMatchObject({ type: "vn_state", turn: null });
     expect(runtime.generateCalls()).toBe(0);

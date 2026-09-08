@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { SpindleAPI } from "lumiverse-spindle-types";
 import { AssetJobSchema, TurnPlanSchema, type AssetJob } from "../../shared/contracts.js";
-import { markAssetReady, registerVisualNovelBackend, sendState, turnView } from "./controller.js";
+import { markAssetReady, registerVisualNovelBackend, sendState, turnView, viewRegistry } from "./controller.js";
 import { chatStatePath, singleCharacterStatePath, turnPath, type StoredChatState, type StoredTurnRecord } from "./storage.js";
 import { seedSingleCharacter } from "../core/visual-state.js";
 import { SINGLE_CHARACTER_SCHEMA_VERSION } from "../../shared/character.js";
@@ -233,7 +233,7 @@ describe("single-character planning flow", () => {
       cues: [{ paragraphIndex: 0, character: "Mira" }, { paragraphIndex: 1, character: "Visitor", attire: "blue pajamas" }],
       characters: [{ name: "Mira", description: "silver hair, green eyes" }, { name: "Visitor", description: "red hair, blue eyes" }]
     }) });
-    await sendState(runtime.spindle, "chat-controller", "user-timeline");
+    await sendState(runtime.spindle, "chat-controller", "user-timeline", { viewOpen: true });
     const state = runtime.data.get(chatStatePath("chat-controller")) as StoredChatState;
     const record = runtime.data.get(state.activeTurnPath!) as StoredTurnRecord;
     expect(record.plan.scenes[0]?.character).toBe("Mira");
@@ -252,7 +252,7 @@ describe("single-character planning flow", () => {
       { id: "assistant-1", content: "Mira steps forward.", is_user: false, name: "Mira" }
     ], { generateRaw: () => singleCharacterPayload("silver hair, green eyes") });
 
-    await sendState(runtime.spindle, "chat-controller", "user-1");
+    await sendState(runtime.spindle, "chat-controller", "user-1", { viewOpen: true });
 
     const stored = runtime.data.get(singleCharacterStatePath("chat-controller")) as Record<string, unknown>;
     expect(stored.schemaVersion).toBe(SINGLE_CHARACTER_SCHEMA_VERSION);
@@ -270,7 +270,7 @@ describe("single-character planning flow", () => {
       generateRaw: () => singleCharacterPayload("silver hair, green eyes, red coat")
     });
 
-    await sendState(runtime.spindle, "chat-controller", "user-1");
+    await sendState(runtime.spindle, "chat-controller", "user-1", { viewOpen: true });
 
     const stored = runtime.data.get(singleCharacterStatePath("chat-controller")) as Record<string, unknown>;
     // Frozen identity wins; the planner's drifted description is ignored.
@@ -296,7 +296,7 @@ describe("single-character planning flow", () => {
       generateRaw: () => { throw new Error("must not re-plan"); }
     });
 
-    await sendState(runtime.spindle, "chat", "user-1");
+    await sendState(runtime.spindle, "chat", "user-1", { viewOpen: true });
 
     // The stored turn is returned as-is; the planner is never invoked again.
     expect(runtime.sent[0]).toMatchObject({ type: "vn_state", chatId: "chat", turn: { messageId: "message" } });
@@ -412,6 +412,7 @@ describe("GENERATION_STARTED abort and ownership invalidation", () => {
   test("without GENERATION_STARTED a completion is still accepted", async () => {
     const { spindle, fire, gates, assetStatuses } = generationFixture();
     registerVisualNovelBackend(spindle);
+    viewRegistry().open(undefined, "chat");
     fire("GENERATION_ENDED", { chatId: "chat", messageId: "assistant-1", content: generationContent });
     await waitFor(() => gates.length >= 1);
     gates[0]!.resolve({ imageId: "image-0", imageUrl: "/api/v1/images/image-0" });
@@ -422,6 +423,7 @@ describe("GENERATION_STARTED abort and ownership invalidation", () => {
   test("aborts the asset controller and invalidates ownership so a running completion cannot persist/send", async () => {
     const { spindle, fire, gates, sent, assetStatuses } = generationFixture();
     registerVisualNovelBackend(spindle);
+    viewRegistry().open(undefined, "chat");
     fire("GENERATION_ENDED", { chatId: "chat", messageId: "assistant-1", content: generationContent });
     // The first job is running (its image call is in flight).
     await waitFor(() => gates.length >= 1);

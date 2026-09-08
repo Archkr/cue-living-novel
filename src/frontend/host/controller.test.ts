@@ -13,6 +13,7 @@ import {
   selectCurrentImage,
   shouldPreserveImage,
   stageTurnInput,
+  viewStateMessages,
   type VisualStageThemeTarget,
 } from "./controller";
 import type { AssetView, TurnView } from "../../protocol.js";
@@ -452,5 +453,32 @@ describe("currentAssetFailure (actionable, truthful retry scope)", () => {
       retryable: true,
       retryScope: "Try again keeps 1 finished image and makes 1 unfinished image again.",
     });
+  });
+});
+
+
+describe("viewStateMessages (view announcement on boot, reconnect, activate, chat switch)", () => {
+  test("announces the open view before requesting state, with a matching viewOpen flag", () => {
+    expect(viewStateMessages("chat-1", true)).toEqual([
+      { type: "vn_view", chatId: "chat-1", open: true },
+      { type: "vn_get_state", chatId: "chat-1", viewOpen: true },
+    ]);
+  });
+
+  test("a closed view is announced as closed so the backend skips its turns", () => {
+    expect(viewStateMessages("chat-1", false)).toEqual([
+      { type: "vn_view", chatId: "chat-1", open: false },
+      { type: "vn_get_state", chatId: "chat-1", viewOpen: false },
+    ]);
+  });
+
+  test("without a chat there is no vn_view announcement, only the state request", () => {
+    expect(viewStateMessages("", false)).toEqual([
+      { type: "vn_get_state", chatId: "", viewOpen: false },
+    ]);
+  });
+
+  test("re-announcing after a reconnect is idempotent (same messages every time)", () => {
+    expect(viewStateMessages("chat-1", true)).toEqual(viewStateMessages("chat-1", true));
   });
 });

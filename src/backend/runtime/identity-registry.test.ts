@@ -421,7 +421,7 @@ describe("controller integration", () => {
       scenes: [scene], cues: [{ paragraphIndex: 0, character: "Fox girl", characterId: "kitsune" }],
       characters: [{ name: "Fox girl", characterId: "kitsune", description: "fox ears", subjectCategory: "female" }]
     }) }) } as any;
-    await sendState(spindle, "chat-reload", "owner");
+    await sendState(spindle, "chat-reload", "owner", { viewOpen: true });
     expect((data.get(characterRegistryPath("chat-reload")) as { characters: Record<string, { aliases: string[] }> }).characters.kitsune?.aliases).toEqual(["Fox girl"]);
 
     // Turn 2: only the bare label, no ids, no character entries. The stored registry must resolve it.
@@ -430,7 +430,7 @@ describe("controller integration", () => {
     reads.length = 0;
     (spindle as any).chat = { getMessages: async () => [messageFor("a1", turn1), messageFor("a2", turn2)] };
     spindle.generate = { raw: async () => ({ content: JSON.stringify({ scenes: [scene], cues: [{ paragraphIndex: 0, character: "Fox girl", attire: "blue yukata" }], characters: [] }) }) } as any;
-    await sendState(spindle, "chat-reload", "owner");
+    await sendState(spindle, "chat-reload", "owner", { viewOpen: true });
     expect(reads).toContain(characterRegistryPath("chat-reload"));
     const state = data.get(chatStatePath("chat-reload")) as StoredChatState;
     const record = data.get(state.activeTurnPath!) as StoredTurnRecord;
@@ -462,7 +462,7 @@ describe("controller integration", () => {
       cues: [{ paragraphIndex: 0, character: "Fox girl", characterId: "kitsune" }, { paragraphIndex: 1, character: "Fox girl", characterId: "kitsune", attire: "blue yukata" }],
       characters: [{ name: "Fox girl", characterId: "kitsune", description: "fox ears, fox tail", subjectCategory: "female" }]
     }) }) } as any;
-    await sendState(spindle, "chat-reg", "owner");
+    await sendState(spindle, "chat-reg", "owner", { viewOpen: true });
     const state = data.get(chatStatePath("chat-reg")) as StoredChatState;
     const record = data.get(state.activeTurnPath!) as StoredTurnRecord;
     expect(record.plan.visualCues.map((cue: { character?: string | null | undefined }) => cue.character)).toEqual(["Kitsune", "Kitsune"]);

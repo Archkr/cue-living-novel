@@ -8,7 +8,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import type { SpindleAPI } from "lumiverse-spindle-types";
-import { registerVisualNovelBackend, sceneImageCache } from "./controller.js";
+import { registerVisualNovelBackend, sceneImageCache, viewRegistry } from "./controller.js";
 import { sceneImageScope } from "../core/scene-image-cache.js";
 import { turnPath, type StoredTurnRecord } from "./storage.js";
 
@@ -82,6 +82,7 @@ function fixture() {
     script = s;
     messages.push({ id, chat_id: chatId, content: CONTENT, is_user: false, name: s.speaker, swipe_id: 0, swipes: [CONTENT], swipe_dates: [1], extra: {}, parent_message_id: null, branch_id: null, created_at: 1, index_in_chat: messages.length, send_date: 1 });
     const before = sent.length;
+    viewRegistry().open("user-1", chatId);
     fire("GENERATION_ENDED", { chatId, messageId: id, content: CONTENT }, "user-1");
     await waitFor(() => sent.slice(before).some((m) => m.type === "vn_turn" && (m.turn as { messageId: string }).messageId === id));
     await settle();
@@ -159,13 +160,13 @@ describe("probe: real controller lifecycle with the scene cache", () => {
     // Chat switch: viewing chat B releases chat A's scope.
     // REVIEW NOTE: the controller only learns the "active" chat from vn_get_state; a chat that
     // only ever received host events is never released by a later switch (P3, see verdict).
-    f.request({ type: "vn_get_state", chatId: "chat-A" });
+    f.request({ type: "vn_get_state", chatId: "chat-A", viewOpen: true });
     await settle();
     expect(cache.snapshot(scopeA).length).toBe(4);              // asking for the same chat releases nothing
-    f.request({ type: "vn_get_state", chatId: "chat-B" });
+    f.request({ type: "vn_get_state", chatId: "chat-B", viewOpen: true });
     await waitFor(() => cache.snapshot(scopeA).length === 0);
     expect(cache.stats().invalidations.chat_switch).toBeGreaterThanOrEqual(1);
-    f.request({ type: "vn_get_state", chatId: "chat-A" });
+    f.request({ type: "vn_get_state", chatId: "chat-A", viewOpen: true });
     await settle();
     // Back in chat A the same Mira cue must generate again (no resurrection).
     const calls = f.providerCalls.length;

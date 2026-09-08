@@ -16,6 +16,7 @@ The preview includes:
 - a closed deterministic pose/expression catalogue chosen purely by paragraph index and text
 - fixed 16:9 camera scene planning and explicit scene-boundary checks
 - swipe, edit, delete, duplicate-submit, and stale-image reconciliation
+- view-gated generation: Cue only plans turns and generates images for chats whose Cue view is open; closing the view (or leaving the chat) aborts the in-flight image batch and marks it cancelled, opening the view plans the latest reply only when nothing current is stored, and cancelled images wait for a manual Retry instead of resuming on their own
 - per-user and per-chat persisted continuity
 - a settings tab, a user-selectable scene-image fit (Cover / Contain / Stretch / Original size / Scale down), five built-in theme presets (Lumiverse, Golden hour, Boxed console, Paper novel, Midnight noir), and a shadow-DOM custom CSS contract that is always the final styling layer
 - an always-accessible **Back to chat** control that restores native Lumiverse

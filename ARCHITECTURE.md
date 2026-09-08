@@ -71,6 +71,38 @@ Lumiverse staging host
 
 ## Turn flow
 
+### View gating
+
+The backend only does automatic work for chats whose Cue view is open. The
+frontend announces visibility with `vn_view { chatId, open }` and repeats the
+flag as `viewOpen` on every `vn_get_state` (boot, reconnect, activation, chat
+switch), so a restarted backend relearns the state from the next request. The
+backend keeps one open chat per user in `runtime/view-registry.ts`.
+
+Gated triggers: `GENERATION_ENDED`, the `MESSAGE_SWIPED` / `SWIPE_EDITED` /
+`MESSAGE_EDITED` reconciles, and the `vn_get_state` bootstrap. A gated trigger
+is skipped entirely (no planner call, no image jobs) when `config.enabled` is
+false or the chat's view is closed; with `debugLogging` on, each skip is traced
+(`skipped ...: view closed`). Only an explicit announcement opens the view:
+`vn_view` with `open:true`, `vn_get_state` with `viewOpen:true`, or an explicit
+user action from the open view (`vn_submit`, `vn_retry_turn`; choices submit
+through `vn_submit`). A `vn_get_state` without `viewOpen` changes nothing, so a
+background request never opens a closed view.
+
+Closing the view (`vn_view` with `open:false`, or `vn_get_state` with
+`viewOpen:false`) aborts the chat's in-flight work the same way
+`GENERATION_STARTED` does — turn ownership dropped, asset batch aborted,
+queued planning cancelled, scene-cache admission released — and persists
+`cancelled` over queued/generating jobs so nothing looks stuck. Leaving a chat
+sends `vn_view open:false` for the previous chat, and the home screen (empty
+chat id) closes whichever view is open, so a chat nobody is watching never
+keeps planning or generating. Opening one chat displaces the user's previously
+open chat, whose work is aborted. Late results are rejected by the ownership
+guards. Reopening goes through `vn_get_state`: a missing or stale stored
+record (a newer reply arrived while closed, detected by message id/fingerprint)
+plans the latest reply once. Cancelled jobs stay cancelled; they are never
+resumed on their own — the reader reruns them by hand with `vn_retry_turn`.
+
 ```text
 GENERATION_STARTED
   -> stage enters waiting state

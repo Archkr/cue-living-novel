@@ -11,6 +11,7 @@ import {
 } from "../../shared/contracts.js";
 import type { FrontendRequest, AssetView, TurnView } from "../../protocol.js";
 import { resolvePanelTemplate } from "./panel-templates.js";
+import { ViewRegistry } from "./view-registry.js";
 import { isFrontendRequest } from "../../protocol.js";
 import { compareTurnKeys } from "../core/guards.js";
 import { PlanningQueue, isAbortError } from "../core/planning-queue.js";
@@ -90,6 +91,105 @@ function noteActiveChat(spindle: SpindleAPI, userId: string | undefined, chatId:
 
 function runtimeKey(userId: string | undefined, chatId: string): string {
   return `${userId ?? "owner"}:${chatId}`;
+}
+
+/**
+ * Chats whose Cue view is currently open, per user. Automatic work (planning
+ * and image generation on host events) is skipped while a chat's view is
+ * closed; opening the view later plans the latest reply through `vn_get_state`.
+ * Exposed for tests; production code reaches it only through this accessor.
+ */
+const views = new ViewRegistry();
+export function viewRegistry(): ViewRegistry {
+  return views;
+}
+
+/**
+ * Persist "cancelled" over any queued/generating job of the chat's active turn
+ * so a view-close abort leaves nothing that looks stuck. Late in-flight results
+ * are already rejected by the ownership check (`activeTurnKeys`).
+ */
+async function cancelIncompleteJobs(spindle: SpindleAPI, chatId: string, userId?: string): Promise<void> {
+  const key = runtimeKey(userId, chatId);
+  // Runs unawaited after a close. If the user reopened the view or a new turn
+  // (retry, reply) claimed ownership while we were loading, the stored jobs
+  // belong to live work now: leave them alone instead of stamping "cancelled"
+  // over freshly queued jobs.
+  const stillClosed = (): boolean => !views.isOpen(userId, chatId) && !activeTurnKeys.has(key);
+  const chatState = await loadChatState(spindle, chatId, userId);
+  if (!chatState.activeTurnPath || !stillClosed()) return;
+  const record = await loadTurnRecord(spindle, chatState.activeTurnPath, userId);
+  if (!record || !stillClosed()) return;
+  const nowTime = new Date().toISOString();
+  let cancelled = 0;
+  const jobs = record.jobs.map((job) => {
+    if (job.status !== "queued" && job.status !== "generating") return job;
+    cancelled += 1;
+    return AssetJobSchema.parse({ ...job, status: "cancelled", error: null, finishedAt: nowTime });
+  });
+  if (cancelled === 0 || !stillClosed()) return;
+  await saveTurnRecord(spindle, chatState.activeTurnPath, { ...record, jobs, updatedAt: nowTime }, userId);
+  dbg(spindle, userId, `view-gate persisted cancelled over ${cancelled} incomplete job(s) chat=${chatId}`);
+}
+
+/**
+ * Abort a chat's in-flight work the same way GENERATION_STARTED does: drop
+ * turn ownership so late results cannot persist or send, abort the asset
+ * batch, cancel queued planning, and release the scene-cache admission.
+ */
+function abortChatWork(spindle: SpindleAPI, userId: string | undefined, chatId: string, reason: string): void {
+  const key = runtimeKey(userId, chatId);
+  planningQueue.cancelChat(userId, chatId, undefined, reason);
+  activeTurnKeys.delete(key);
+  assetControllers.get(key)?.abort(reason);
+  releaseSceneCacheAdmission(spindle, userId, chatId, "view_closed");
+  void cancelIncompleteJobs(spindle, chatId, userId).catch((error) => {
+    spindle.log.warn(`Visual novel view-close cleanup failed: ${errorText(error)}`);
+  });
+}
+
+/** Mark a chat's view open. Opening displaces the user's previously open chat, whose work is aborted. */
+function openView(spindle: SpindleAPI, userId: string | undefined, chatId: string): void {
+  if (!chatId) return;
+  const wasOpen = views.isOpen(userId, chatId);
+  const displaced = views.open(userId, chatId);
+  if (!wasOpen) dbg(spindle, userId, `view open chat=${chatId}`);
+  if (displaced) {
+    dbg(spindle, userId, `view closed chat=${displaced} reason=view_switched`);
+    abortChatWork(spindle, userId, displaced, "The visual novel view moved to another chat.");
+  }
+}
+
+/** Close whichever chat's view is open for this user (home screen, no active chat). */
+function closeOpenView(spindle: SpindleAPI, userId: string | undefined, reason: string): void {
+  const open = views.openChat(userId);
+  if (open) closeView(spindle, userId, open, reason);
+}
+
+/** Mark a chat's view closed and abort its in-flight work. Idempotent. */
+function closeView(spindle: SpindleAPI, userId: string | undefined, chatId: string, reason: string): void {
+  if (!views.close(userId, chatId)) return;
+  dbg(spindle, userId, `view closed chat=${chatId} reason=${reason}`);
+  abortChatWork(spindle, userId, chatId, "The visual novel view closed before this turn settled.");
+}
+
+/**
+ * Whether automatic work (planning + image generation triggered by host
+ * events) may run for a chat. Explicit requests from the open view
+ * (vn_get_state, vn_retry_turn, choices) never pass through here.
+ */
+async function allowAutomaticWork(spindle: SpindleAPI, userId: string | undefined, chatId: string, trigger: string): Promise<boolean> {
+  const config = await loadConfig(spindle, userId);
+  rememberDebugFlag(userId, config);
+  if (!config.enabled) {
+    dbg(spindle, userId, `skipped ${trigger}: extension disabled (enabled=false) chat=${chatId}`);
+    return false;
+  }
+  if (!views.isOpen(userId, chatId)) {
+    dbg(spindle, userId, `skipped ${trigger}: view closed chat=${chatId}`);
+    return false;
+  }
+  return true;
 }
 
 function errorText(error: unknown): string {
@@ -320,14 +420,42 @@ async function bootstrapLatestAssistantTurn(spindle: SpindleAPI, chatId: string,
   await processAssistantMessage(spindle, chatId, latest, latest.content, userId);
 }
 
-export async function sendState(spindle: SpindleAPI, chatId: string, userId?: string): Promise<void> {
+/**
+ * Whether the stored record no longer matches the latest assistant reply. This
+ * happens when replies arrived while the view was closed (they were skipped);
+ * reopening the view must plan the latest reply.
+ */
+async function recordIsStale(spindle: SpindleAPI, chatId: string, record: StoredTurnRecord): Promise<boolean> {
+  const messages = await spindle.chat.getMessages(chatId) as NormalizedChatMessage[];
+  const latest = [...messages].reverse().find((message) => !message.is_user && message.content.trim());
+  if (!latest) return false;
+  if (latest.id !== record.plan.key.assistantMessageId) return true;
+  const fingerprint = fingerprintForMessage({ id: latest.id, swipe_id: latest.swipe_id, content: latest.content });
+  return fingerprint !== record.plan.key.sourceFingerprint;
+}
+
+export async function sendState(
+  spindle: SpindleAPI,
+  chatId: string,
+  userId?: string,
+  options: { viewOpen?: boolean } = {}
+): Promise<void> {
+  // No active chat (home screen): whatever view was open is gone. Close it
+  // before the first await so a reply landing meanwhile is already gated.
+  if (!chatId) closeOpenView(spindle, userId, "no_active_chat");
   const config = await loadConfig(spindle, userId);
   rememberDebugFlag(userId, config);
-  noteActiveChat(spindle, userId, chatId);
   if (!chatId) {
     spindle.sendToFrontend({ type: "vn_state", chatId: "", config, turn: null }, userId);
     return;
   }
+  // Only an explicit flag changes the view state. A state request that says
+  // nothing about the view (background reconcile, older frontends) must never
+  // open it, or closed chats would start paying for planning and images again.
+  if (options.viewOpen === true) openView(spindle, userId, chatId);
+  else if (options.viewOpen === false) closeView(spindle, userId, chatId, "state_request");
+  // The scene cache follows the chat the user is looking at, not background requests.
+  if (views.isOpen(userId, chatId)) noteActiveChat(spindle, userId, chatId);
   const chatState = await loadChatState(spindle, chatId, userId);
   let record: StoredTurnRecord | null = null;
   try {
@@ -345,7 +473,20 @@ export async function sendState(spindle: SpindleAPI, chatId: string, userId?: st
     config,
     turn: record ? await turnViewWithAudio(spindle, record) : null
   }, userId);
-  if (!record) await bootstrapLatestAssistantTurn(spindle, chatId, userId);
+  const canPlan = config.enabled && views.isOpen(userId, chatId);
+  if (!record) {
+    if (canPlan) await bootstrapLatestAssistantTurn(spindle, chatId, userId);
+    else dbg(spindle, userId, `skipped bootstrap: ${config.enabled ? "view closed" : "extension disabled (enabled=false)"} chat=${chatId}`);
+    return;
+  }
+  if (!canPlan) return;
+  if (await recordIsStale(spindle, chatId, record)) {
+    dbg(spindle, userId, `stored turn is stale (a newer reply arrived while the view was closed); planning the latest reply chat=${chatId}`);
+    await bootstrapLatestAssistantTurn(spindle, chatId, userId);
+  }
+  // A close mid-batch leaves cancelled jobs behind. They are not resumed
+  // automatically on reopen (a GENERATION_STARTED abort looks the same and a
+  // newer reply is usually on its way); the reading view offers Retry for them.
 }
 
 async function persistActiveTurn(
@@ -384,6 +525,13 @@ async function startAssets(
   const config = await loadConfig(spindle, userId);
   rememberDebugFlag(userId, config);
   if (!config.generateImages || record.jobs.length === 0) return;
+  // The view may have closed between planning and this batch start; a closed
+  // view means nobody sees (or pays for) these images.
+  if (!views.isOpen(userId, record.plan.key.chatId)) {
+    dbg(spindle, userId, `skipped asset batch: view closed chat=${record.plan.key.chatId}`);
+    await cancelIncompleteJobs(spindle, record.plan.key.chatId, userId);
+    return;
+  }
   const cacheServed = record.jobs.filter((job) => job.provider === CACHE_JOB_PROVIDER).length;
   dbg(spindle, userId, `assets starting: ${record.jobs.length - cacheServed} generated job(s)${cacheServed ? ` + ${cacheServed} cache-served swap(s) (not generated)` : ""} for chat=${record.plan.key.chatId} message=${record.plan.key.assistantMessageId} concurrency=${config.imageConcurrency}`);
   const key = runtimeKey(userId, record.plan.key.chatId);
@@ -579,9 +727,16 @@ async function processAssistantMessage(
         }
       ]
     };
+    // The view may have closed (or a new generation started) during the awaits
+    // above. Persisting or sending now would resurrect a turn nobody is watching.
+    if (operation.controller.signal.aborted) {
+      dbg(spindle, userId, `planned turn dropped after abort chat=${chatId} message=${message.id}`);
+      return;
+    }
     const key = runtimeKey(userId, chatId);
     activeTurnKeys.set(key, record.plan.key);
     await persistActiveTurn(spindle, record, path, userId);
+    if (operation.controller.signal.aborted) return;
     spindle.sendToFrontend({ type: "vn_turn", turn: await turnViewWithAudio(spindle, record) }, userId);
     if (!config.useNativeCardImages && config.generateImages) {
       void startAssets(spindle, record, path, userId).catch((error) => {
@@ -611,6 +766,7 @@ async function generationEnded(spindle: SpindleAPI, payload: GenerationEndedPayl
   }, userId);
   dbg(spindle, userId, `event GENERATION_ENDED chat=${payload.chatId} message=${payload.messageId ?? "latest"} contentChars=${payload.content?.length ?? 0}${payload.error ? ` error=${payload.error}` : ""}`);
   if (payload.error || !payload.content) return;
+  if (!(await allowAutomaticWork(spindle, userId, payload.chatId, "GENERATION_ENDED"))) return;
   const messages = await spindle.chat.getMessages(payload.chatId) as NormalizedChatMessage[];
   const message = payload.messageId
     ? messages.find((candidate) => candidate.id === payload.messageId)
@@ -808,8 +964,14 @@ async function handleFrontendMessage(spindle: SpindleAPI, request: FrontendReque
       }
       return;
     }
+    case "vn_view": {
+      if (typeof request.chatId !== "string" || !request.chatId) return;
+      if (request.open) openView(spindle, userId, request.chatId);
+      else closeView(spindle, userId, request.chatId, "vn_view");
+      return;
+    }
     case "vn_get_state":
-      await sendState(spindle, request.chatId ?? "", userId);
+      await sendState(spindle, request.chatId ?? "", userId, request.viewOpen === undefined ? {} : { viewOpen: request.viewOpen });
       return;
     case "vn_get_connection_catalog": {
       const catalog = await loadConnectionCatalog(spindle, userId);
@@ -887,6 +1049,9 @@ async function handleFrontendMessage(spindle: SpindleAPI, request: FrontendReque
       return;
     }
     case "vn_submit":
+      // Submissions only come from the open view; a restarted backend relearns
+      // the open state here so the resulting reply is not skipped.
+      openView(spindle, userId, request.chatId);
       await submit(spindle, request, userId);
       return;
     case "vn_asset_ready":
@@ -899,6 +1064,8 @@ async function handleFrontendMessage(spindle: SpindleAPI, request: FrontendReque
       return;
     }
     case "vn_retry_turn": {
+      // Retries only come from the open view; never gate explicit user actions.
+      openView(spindle, userId, request.chatId);
       const messages = await spindle.chat.getMessages(request.chatId) as NormalizedChatMessage[];
       const message = messages.find((candidate) => candidate.id === request.messageId);
       if (!message) throw new Error("The assistant message no longer exists.");
@@ -937,14 +1104,17 @@ async function clearDeletedTurn(spindle: SpindleAPI, payload: unknown, userId?: 
     terminalContinuity: null,
     updatedAt: new Date().toISOString()
   }, userId);
-  await sendState(spindle, candidate.chatId, userId);
+  await sendState(spindle, candidate.chatId, userId, { viewOpen: views.isOpen(userId, candidate.chatId) });
 }
 
 function reconcileMessageEvent(spindle: SpindleAPI, payload: unknown, userId?: string): void {
   const event = eventMessage(payload);
   if (!event || event.message.is_user) return;
-  releaseSceneCacheAdmission(spindle, userId, event.chatId, "message_changed");
-  void processAssistantMessage(spindle, event.chatId, event.message, event.message.content, userId).catch((error) => {
+  void (async () => {
+    if (!(await allowAutomaticWork(spindle, userId, event.chatId, "message reconcile"))) return;
+    releaseSceneCacheAdmission(spindle, userId, event.chatId, "message_changed");
+    await processAssistantMessage(spindle, event.chatId, event.message, event.message.content, userId);
+  })().catch((error) => {
     spindle.log.error(`Visual novel message reconciliation failed: ${errorText(error)}`);
   });
 }
