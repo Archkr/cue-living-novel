@@ -178,10 +178,36 @@ function stableChoiceId(label: string, index: number): string {
   return `choice-${hash.toString(16).padStart(8, "0")}`;
 }
 
+/** Hide comments and metadata enclosed by markers such as GFX_START / GFX_END. */
+function commentRanges(content: string): Array<{ start: number; end: number }> {
+  const ranges: Array<{ start: number; end: number }> = [];
+  const starts = new Map<string, number[]>();
+  for (const match of content.matchAll(/<!--[\s\S]*?(?:-->|$)/g)) {
+    const end = match.index + match[0].length;
+    ranges.push({ start: match.index, end });
+    const marker = /^<!--\s*([\w-]+)_(START|END)\s*-->$/i.exec(match[0]);
+    if (!marker) continue;
+    const name = marker[1]!.toUpperCase();
+    const stack = starts.get(name) ?? [];
+    if (marker[2]!.toUpperCase() === "START") {
+      stack.push(match.index);
+      starts.set(name, stack);
+    } else {
+      const start = stack.pop();
+      if (start !== undefined) ranges.push({ start, end });
+    }
+  }
+  // An unfinished metadata block is still metadata, including during streaming.
+  for (const stack of starts.values()) {
+    if (stack.length) ranges.push({ start: stack[0]!, end: content.length });
+  }
+  return ranges;
+}
+
 export function prepareNarrative(content: string, options: PrepareNarrativeOptions = {}): PreparedNarrative {
   content = content.replace(/\r\n?/g, "\n");
   const spans: PanelSpan[] = extractPanelSpans(content);
-  const hidden: Array<{ start: number; end: number }> = [];
+  const hidden = commentRanges(content);
   for (const raw of options.ignoredTags ?? []) {
     const tag = raw.trim().replace(/^[<\[]|[>\]]$/g, "").replace(/^\//, "");
     if (!tag) continue;

@@ -85,6 +85,7 @@ export type SettingsPanelOptions = {
 
 /** Keys the Advanced section owns. Everything else saves as soon as it changes. */
 const ADVANCED_KEYS = [
+  "parserConnectionId",
   "novelAiQualityTags", "novelAiUseDefaultNegative",
   "imageModel", "imageConcurrency", "parserParameters", "imageParameters", "audioDirectory",
   "includeRecentMessages", "includeCharacterContext", "includePersonaContext", "includeLorebookContext", "debugLogging",
@@ -806,7 +807,6 @@ export class VisualNovelSettingsPanel {
       case "imageSource":
       case "setupImageSource":
         return imageSourcePatch(target.value as ImageSource);
-      case "parserConnectionId":
       case "setupParserConnectionId":
         return { parserConnectionId: target.value.trim() || null };
       case "imageConnectionId":
@@ -1033,7 +1033,7 @@ export class VisualNovelSettingsPanel {
   private readonly synced = new Map<AdvancedKey, string>();
 
   private advancedValue(name: AdvancedKey): string {
-    const element = this.control<HTMLInputElement | HTMLTextAreaElement>(name);
+    const element = this.control<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>(name);
     return element instanceof HTMLInputElement && element.type === "checkbox" ? String(element.checked) : element.value;
   }
 
@@ -1067,6 +1067,7 @@ export class VisualNovelSettingsPanel {
 
   private readAdvanced(): Partial<VisualNovelConfig> {
     return {
+      parserConnectionId: this.control<HTMLSelectElement>("parserConnectionId").value.trim() || null,
       imageModel: this.control<HTMLInputElement>("imageModel").value.trim(),
       imageConcurrency: clamp(Math.round(Number(this.control<HTMLInputElement>("imageConcurrency").value)), 1, 6, DEFAULT_CONFIG.imageConcurrency),
       parserParameters: jsonObject(this.control<HTMLTextAreaElement>("parserParameters").value, "Story reader parameters"),
@@ -1300,8 +1301,11 @@ export class VisualNovelSettingsPanel {
 
   private renderConnectionSelects(kind: ConnectionCatalogKind, selectedId: string | null): void {
     const state = this.connectionStates[kind];
-    const options = buildConnectionSelectOptions(state.options, selectedId);
     for (const select of this.root.querySelectorAll<HTMLSelectElement>(`select[data-connection-select="${kind}"]`)) {
+      const isParser = select.name === "parserConnectionId";
+      const hasDraft = isParser && this.drafts.has("parserConnectionId");
+      const value = hasDraft ? select.value : selectedId ?? "";
+      const options = buildConnectionSelectOptions(state.options, value || null);
       select.replaceChildren(...options.map((item) => {
         const option = document.createElement("option");
         option.value = item.value;
@@ -1309,7 +1313,8 @@ export class VisualNovelSettingsPanel {
         if (item.missing) option.dataset.missing = "true";
         return option;
       }));
-      select.value = selectedId ?? "";
+      select.value = value;
+      if (isParser && !hasDraft) this.synced.set("parserConnectionId", value);
     }
     const readiness = connectionReadiness(kind, state, selectedId);
     for (const row of this.root.querySelectorAll<HTMLElement>(`[data-readiness="${kind}"]`)) {

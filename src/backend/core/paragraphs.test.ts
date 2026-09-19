@@ -2,6 +2,34 @@ import { describe, expect, test } from "bun:test";
 import { extractInlineCardImages, extractInlineCardImagesWithParagraphs, prepareNarrative } from "./paragraphs.js";
 
 describe("narrative preparation", () => {
+  test("hides comment-delimited metadata and choices across paragraphs without shifting source indexes", () => {
+    const prepared = prepareNarrative("Before.\n\n<!-- GFX_START -->\nGraphics notes.\n\n<Choice>Hidden choice</Choice>\n<!-- GFX_END -->\n\nAfter.");
+    expect(prepared.paragraphs).toEqual([
+      { index: 0, sourceIndex: 0, text: "Before." },
+      { index: 1, sourceIndex: 3, text: "After." },
+    ]);
+    expect(prepared.choices).toEqual([]);
+  });
+
+  test("hides nested, repeated and unfinished comment-delimited blocks", () => {
+    const prepared = prepareNarrative("Before.\n\n<!-- gfx_start -->outer<!-- GFX_START -->inner<!-- GFX_END -->outer<!-- gfx_end -->\n\nMiddle.\n\n<!-- GFX_START -->more<!-- GFX_END -->\n\nAfter.\n\n<!-- GFX_START -->unfinished");
+    expect(prepared.paragraphs.map((p) => p.text)).toEqual(["Before.", "Middle.", "After."]);
+  });
+
+  test("removes standalone and multiline comments while keeping ordinary formatting", () => {
+    const prepared = prepareNarrative("Before.<!-- note -->\n\n<!-- hidden\n\ncomment -->\n\nA <em>visible</em> word.\n\n<!-- unfinished");
+    expect(prepared.paragraphs).toEqual([
+      { index: 0, sourceIndex: 0, text: "Before." },
+      { index: 1, sourceIndex: 3, text: "A <em>visible</em> word." },
+    ]);
+  });
+
+  test("keeps graphics available as panels without reading their wrapper or metadata", () => {
+    const prepared = prepareNarrative("Before.\n\n<!-- GFX_START -->\nGraphics notes.\n<div>HP: 10</div>\n<!-- GFX_END -->\n\nAfter.");
+    expect(prepared.paragraphs.map((p) => p.text)).toEqual(["Before.", "After."]);
+    expect(prepared.panels.map((p) => p.html)).toEqual(["<div>HP: 10</div>"]);
+  });
+
   test("keeps paragraph source indexes after removing metadata", () => {
     const prepared = prepareNarrative("First paragraph.\n\n<Think>hidden</Think>\n\nSecond paragraph.", { ignoredTags: ["Think"] });
     expect(prepared.paragraphs).toEqual([
