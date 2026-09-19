@@ -1850,8 +1850,6 @@ export class VnStage {
     const shouldStripMarkdown = currentPreset === "literature-club" || currentPreset === "yamaku-classic";
     const formatted = formatDialogueText(paragraph.text, this.customRegexRules, {
       stripMarkdown: shouldStripMarkdown,
-      forceQuotes: shouldStripMarkdown,
-      hasSpeaker: Boolean(paragraph.speaker && paragraph.speaker.trim())
     });
     if (
       this.currentRenderedParagraphId === paragraph.id &&

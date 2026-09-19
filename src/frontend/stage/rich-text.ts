@@ -187,8 +187,6 @@ function sanitizeAndRestoreAllowedHtml(escapedText: string): string {
  */
 export type DialogueFormatOptions = {
   stripMarkdown?: boolean;
-  forceQuotes?: boolean;
-  hasSpeaker?: boolean;
 };
 
 function stripMarkdown(text: string): string {
@@ -224,13 +222,6 @@ function stripMarkdown(text: string): string {
   return md;
 }
 
-function applyDialogueQuotes(text: string, hasSpeaker: boolean): string {
-  const trimmed = text.trim();
-  if (!trimmed || !hasSpeaker) return text;
-  if (/[“"”「」]/.test(trimmed)) return text;
-  return `"${trimmed}"`;
-}
-
 export function formatDialogueText(
   rawText: string,
   regexRules: CustomRegexRule[] = [],
@@ -263,14 +254,8 @@ export function formatDialogueText(
     formatted = parseMarkdown(formatted);
   }
 
-  // 5. Apply quotes if necessary for spoken dialogue
-  if (options.forceQuotes) {
-    formatted = applyDialogueQuotes(formatted, Boolean(options.hasSpeaker));
-  }
-
-  // 6. Restore sanitized safe tags
+  // 5. Restore sanitized safe tags, preserving the story's authored quotation marks.
   formatted = sanitizeAndRestoreAllowedHtml(formatted);
 
   return formatted;
 }
-
